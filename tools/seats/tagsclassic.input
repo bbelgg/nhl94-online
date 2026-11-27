@@ -1,0 +1,63 @@
+# Name tag test, Classic mode (no seats: run with NHL94_SEATS=off) (@OUT@ = output dir, filled in by run_tags.sh). Head to Head,
+# 30-second periods. PLAYER n = seat n-1 = game pad n. Both seats move so the
+# tags are checked on moving skaters; period 2 shows the flipped orientation.
+PLAYER 2
+WAIT 1
+PLAYER 1
+# Title -> setup -> Players = Two - Head to Head -> on ice (~t1600).
+WAIT 600
+PRESS START 5
+WAIT 120
+PRESS START 5
+WAIT 120
+PRESS DOWN 5
+WAIT 20
+PRESS RIGHT 5
+WAIT 20
+PRESS RIGHT 5
+WAIT 20
+PRESS RIGHT 5
+WAIT 20
+PRESS START 5
+WAIT 240
+PRESS START 5
+WAIT 240
+WRITE_RAM16 0xFFD050 0x0003
+PRESS START 5
+
+WAIT 400
+# Classic: the game's pads control skaters and switch them (B / loose puck).
+# Both pads skate toward the puck and press B, so the controlled skater changes.
+PLAYER 1
+HOLD UP
+PLAYER 2
+HOLD UP
+WAIT 40
+SCREENSHOT @OUT@/@NAME@_a.png
+PLAYER 1
+PRESS B 3
+PLAYER 2
+PRESS B 3
+WAIT 30
+SCREENSHOT @OUT@/@NAME@_b.png
+PLAYER 1
+HOLD RIGHT
+WAIT 20
+PRESS B 3
+WAIT 30
+SCREENSHOT @OUT@/@NAME@_c.png
+PLAYER 2
+HOLD LEFT
+WAIT 20
+PRESS B 3
+WAIT 30
+SCREENSHOT @OUT@/@NAME@_d.png
+WAIT 60
+SCREENSHOT @OUT@/@NAME@_e.png
+WAIT 60
+SCREENSHOT @OUT@/@NAME@_f.png
+PLAYER 1
+RELEASE
+PLAYER 2
+RELEASE
+WAIT 100

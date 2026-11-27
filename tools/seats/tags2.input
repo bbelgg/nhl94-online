@@ -1,0 +1,63 @@
+# Name tag test (@OUT@ = output dir, filled in by run_tags.sh). Head to Head,
+# 30-second periods. PLAYER n = seat n-1 = game pad n. Both seats move so the
+# tags are checked on moving skaters; period 2 shows the flipped orientation.
+PLAYER 2
+WAIT 1
+PLAYER 1
+# Title -> setup -> Players = Two - Head to Head -> on ice (~t1600).
+WAIT 600
+PRESS START 5
+WAIT 120
+PRESS START 5
+WAIT 120
+PRESS DOWN 5
+WAIT 20
+PRESS RIGHT 5
+WAIT 20
+PRESS RIGHT 5
+WAIT 20
+PRESS RIGHT 5
+WAIT 20
+PRESS START 5
+WAIT 240
+PRESS START 5
+WAIT 240
+WRITE_RAM16 0xFFD050 0x0003
+PRESS START 5
+
+WAIT 400
+# period 1: puck drops ~t1770. Both seats skate UP (home C up the screen; the
+# away C, attacking down, is remapped so UP is toward his goal)
+PLAYER 1
+HOLD UP
+PLAYER 2
+HOLD UP
+WAIT 50
+SCREENSHOT @OUT@/@NAME@_p1_a.png
+WAIT 60
+SCREENSHOT @OUT@/@NAME@_p1_b.png
+PLAYER 1
+RELEASE UP
+PLAYER 2
+RELEASE UP
+WAIT 40
+SCREENSHOT @OUT@/@NAME@_p1_c.png
+# to period 2 (home attacks DOWN)
+WAIT_RAM16 0xFFC468 0x0000
+WAIT 330
+PRESS START 5
+WAIT_RAM16 0xFFC2EA 0x0200
+WAIT 30
+PLAYER 1
+HOLD UP
+PLAYER 2
+HOLD UP
+WAIT 60
+SCREENSHOT @OUT@/@NAME@_p2_a.png
+WAIT 100
+SCREENSHOT @OUT@/@NAME@_p2_b.png
+PLAYER 1
+RELEASE UP
+PLAYER 2
+RELEASE UP
+WAIT 200

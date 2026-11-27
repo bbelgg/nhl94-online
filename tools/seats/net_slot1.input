@@ -1,0 +1,10 @@
+# Netplay peer slot 1 (seat 1 = away:C): no menu input; drive the away C once
+# the puck is in play. Away attacks DOWN in period 1, so UP is remapped to -y.
+WAIT 1850
+HOLD UP
+WAIT 150
+RELEASE UP
+HOLD LEFT
+WAIT 100
+RELEASE LEFT
+WAIT 2000

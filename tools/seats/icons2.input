@@ -1,0 +1,69 @@
+# Call-for-pass icon test (@OUT@ / @NAME@ filled in by run_checks_pass.sh).
+# NHL94_SEATS=home:C,home:RD, local seat 0 = PLAYER 1 = home C (SC 2); PLAYER 2
+# = home RD (SC 3). 30-second periods. Shots: period 1 HELD (the C carries and
+# the RD holds B: ring pulses between two sizes, 8 ticks apart), QUEUED (the C
+# passes up to an AI mate, the RD taps B: the AI carrier is asked), and period 2
+# (home attacks DOWN: the picture is turned 180 degrees) HELD again.
+PLAYER 2
+WAIT 1
+PLAYER 1
+WAIT 600
+PRESS START 5
+WAIT 120
+PRESS START 5
+WAIT 120
+PRESS DOWN 5
+WAIT 20
+PRESS RIGHT 5
+WAIT 20
+PRESS RIGHT 5
+WAIT 20
+PRESS RIGHT 5
+WAIT 20
+PRESS START 5
+WAIT 240
+PRESS START 5
+WAIT 240
+WRITE_RAM16 0xFFD050 0x0003
+PRESS START 5
+WAIT_RAM16 FFB7AA 0002
+WAIT 20
+# HELD: the RD calls while the C carries
+PLAYER 2
+HOLD B
+WAIT 12
+SCREENSHOT @OUT@/@NAME@_p1_held_a.png
+WAIT 8
+SCREENSHOT @OUT@/@NAME@_p1_held_b.png
+PLAYER 2
+RELEASE B
+WAIT 10
+# the C passes straight up to an AI mate, then the RD asks him
+PLAYER 1
+HOLD UP
+PRESS B 12
+WAIT 20
+RELEASE UP
+WAIT_RAM16 FFB7AA 0004
+PLAYER 2
+PRESS B 3
+WAIT 5
+SCREENSHOT @OUT@/@NAME@_p1_queued.png
+WAIT 120
+# to period 2
+WAIT_RAM16 0xFFC468 0x0000
+WAIT 330
+PRESS START 5
+WAIT_RAM16 0xFFC2EA 0x0200
+WAIT 30
+WAIT_RAM16 FFB7AA 0005
+WAIT 20
+PLAYER 2
+HOLD B
+WAIT 12
+SCREENSHOT @OUT@/@NAME@_p2_held_a.png
+WAIT 8
+SCREENSHOT @OUT@/@NAME@_p2_held_b.png
+PLAYER 2
+RELEASE B
+WAIT 100

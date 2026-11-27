@@ -1,0 +1,7 @@
+# Copy to local.cmake (git-ignored) to set this machine's build defaults.
+# Read when a build directory is first configured; -DNHL94_LOBBY_URL=... or
+# the NHL94_LOBBY_URL environment variable take precedence.
+#
+# Default lobby server baked into netplay builds (players can still change it
+# in Launcher -> Netplay, or with RNET_LOBBY_URL). Empty = recomp-net's default.
+set(NHL94_LOBBY_URL_DEFAULT "ws://lobby.example.org:8765")

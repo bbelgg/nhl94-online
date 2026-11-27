@@ -1,0 +1,776 @@
+# WebSocket lobby protocol (MotK / psxrecomp)
+
+JSON-over-WebSocket contract implemented by this server (`src/ws_lobby.rs`) and
+consumed by the MotK / psxrecomp lobby client (`psx_lobby_client`).
+
+Default listen URL: `ws://127.0.0.1:8765`  
+Clients override with env `PSX_NET_LOBBY_URL`.
+
+This document is the **client-facing wire format**. The open `recomp-net`
+library does **not** include a lobby server — run this project (or another
+compatible implementation) separately.
+
+## Transport
+
+- One WebSocket connection per player (`/` or `/ws` on the same listener as HTTP `/v1`).
+- Text frames carry a single JSON object per message.
+- Every message has a string `"op"` field.
+
+## Identity
+
+On connect the server assigns a UUID `player_id` and replies:
+
+```json
+{ "op": "welcome", "player_id": "...", "ok": true }
+```
+
+Client may then send:
+
+```json
+{ "op": "hello", "display_name": "Alex" }
+```
+
+`hello` may be sent again at any time, and is how a client renames: the
+server updates the hub-wide row, and, when the client is seated, the seat
+too (deduplicated within that room like a join, then broadcast as
+`lobby_update`). The reply carries the accepted name, which differs from
+the requested one when the room already had it:
+
+```json
+{ "op": "hello_ok", "ok": true, "display_name": "Alex (2)" }
+```
+
+## Listing
+
+Client → server:
+
+```json
+{ "op": "list" }
+```
+
+Server → clients (on request, on change, and ~1 Hz while anyone is connected):
+
+```json
+{
+  "op": "lobby_list",
+  "lobbies": [
+    {
+      "lobby_id": "...",
+      "name": "Friday Fights",
+      "game_name": "Star Wars: Masters of Teras Kasi",
+      "game_version": "0.1.0",
+      "player_count": 1,
+      "max_slots": 2,
+      "has_password": true,
+      "host_endpoint": "203.0.113.10:7777",
+      "lan_endpoints": ["192.168.1.42:7777"],
+      "host_country": "JP",
+      "allow_spectators": true,
+      "max_spectators": 4,
+      "spectator_count": 1
+    }
+  ],
+  "players": [
+    { "display_name": "Marisa", "country": "JP", "lobby_id": "...",
+      "lobby_name": "Friday Fights", "hosting": true, "tag": "3f9a1c02" },
+    { "display_name": "Reimu", "country": "DE", "lobby_id": "",
+      "lobby_name": "", "hosting": false, "tag": "b71e40d9" }
+  ]
+}
+```
+
+`tag` is the first 8 characters of that connection's player id: a client
+finds its own row by comparing with its id, since display names are not
+unique across the hub. Each row also carries `game_name`, the title that
+client last listed for; a filtered `list` (with `game_name`) returns only
+the players of that title, and the unfiltered broadcast carries everyone,
+for the client to filter.
+
+### Server chat (per game)
+
+```json
+{ "op": "server_chat", "game_name": "…", "text": "anyone up for a set?" }
+```
+
+Relayed, after the profanity filter, to every client of the same **title**
+-- seated in a room or not, and regardless of `game_version`, so two builds
+of one game share the room. The server learns a client's title from
+`hello` (`game_name`), from `list`, from creating or joining a lobby, and
+from a `server_chat` line that carries one; `game_name` on the line is what
+lets a client chat before it has browsed:
+
+```json
+{ "op": "server_chat", "game_name": "…", "from_player_id": "…",
+  "from": "Marisa", "country": "JP", "text": "anyone up for a set?" }
+```
+
+No history is kept. `error` / `no_game` comes back only when the server has
+no title for that client from any of those sources.
+
+`allow_spectators` / `max_spectators` / `spectator_count` describe the
+lobby's gallery (a browser shows "No" or "1/4"). `players` is everyone
+connected to the hub, seated or browsing, sorted by name; `lobby_id` is
+empty for a player who is only browsing. Both are additive: older clients
+ignore them.
+
+Passwords are never listed — only `has_password`.
+`host_endpoint` is the public/STUN UDP address for list latency.
+`lan_endpoints` is deprecated for privacy: current clients discover same-LAN
+hosts via a local UDP broadcast beacon (`RNETBC1`) keyed by `lobby_id`, and
+omit private IPs from the hub. The field remains accepted/echoed for older
+clients. At create, `host_endpoint` is the TCP-peer rewrite of `host_bind`;
+the host should follow up with `set_host_endpoint` after STUN.
+
+## Set host endpoint (STUN + LAN advertise)
+
+Host-only, while in a lobby (before launch / input-relay rewrite):
+
+```json
+{
+  "op": "set_host_endpoint",
+  "host_endpoint": "203.0.113.10:54321"
+}
+```
+
+Success: `{ "op": "host_endpoint_ok", "ok": true }` plus `lobby_update` and a
+list broadcast. Rejects `0.0.0.0`, port `0`, and updates after the server has
+opened an input-relay session (`relay_locked`). `lan_endpoints` are capped at
+4 and filtered to RFC1918 only.
+
+`list` may optionally include `game_name` and/or `game_version` to filter
+the response (exact match). Broadcast / periodic list pushes remain
+unfiltered; clients should filter locally to their own title + release.
+
+## Create
+
+```json
+{
+  "op": "create",
+  "name": "Friday Fights",
+  "game_name": "Star Wars: Masters of Teras Kasi",
+  "game_version": "0.1.0",
+  "disc_fp": "0123…64 hex chars…abcd",
+  "password": "optional",
+  "max_slots": 2,
+  "host_bind": "0.0.0.0:7777",
+  "display_name": "Host",
+  "match_caps": {
+    "v": 1,
+    "aspect_num": 4,
+    "aspect_den": 3,
+    "turbo_loads": true,
+    "bios_hle": true,
+    "fast_boot": false,
+    "auto_skip_fmv": false,
+    "input_delay": 2,
+    "language": "en"
+  }
+}
+```
+
+`game_version` is the release / build pin for this title (semver or tag).
+Omitted or empty → stored as `"dev"` (local/dev builds). Peers must match
+exactly to join.
+
+`disc_fp` is an optional lowercase hex SHA-256 of the mounted disc TOC
+(geometry fingerprint from the client). Omitted / empty / invalid → stored
+empty (legacy). When either the lobby or the joiner has a non-empty
+fingerprint, both must match or join fails with `disc_mismatch`. This
+catches Track-01-only dumps vs full multi-track cues even when data-track
+hashes agree.
+
+`match_caps` is optional. When present it must be a JSON object (≤4096
+bytes serialized). The server stores it opaquely and echoes it on
+`created` / `joined` / `lobby_update` / `launch` so guests can apply the
+host’s sim-affecting settings at boot. Present-only settings (renderer,
+fullscreen, filters) stay local. Optional `mods` is the host’s required
+package list (`[{id,ver,n,f,b,size},…]`); the match runs those packages
+and enabled features, not vanilla.
+
+Success:
+
+```json
+{
+  "op": "created",
+  "ok": true,
+  "lobby_id": "...",
+  "session_id": 1,
+  "local_slot": 0,
+  "host_endpoint": "127.0.0.1:7777",
+  "slots": [{ "slot": 0, "player_id": "...", "display_name": "Host" }]
+}
+```
+
+`host_endpoint` is the address peers should use as the LAN peer
+(server rewrites `0.0.0.0` / `*` to the connecting client’s TCP peer IP when possible).
+
+## Join
+
+```json
+{
+  "op": "join",
+  "lobby_id": "...",
+  "password": "optional",
+  "guest_bind": "0.0.0.0:7778",
+  "display_name": "Guest",
+  "game_name": "Star Wars: Masters of Teras Kasi",
+  "game_version": "0.1.0",
+  "disc_fp": "0123…64 hex chars…abcd",
+  "mod_offer": { "v": 1, "pkgs": [ { "id": "psx.foo", "ver": "1.0.0" } ] }
+}
+```
+
+`game_version` is normalized like create (`""` → `"dev"`). When present,
+`game_name` must also match the lobby. `mod_offer` is the guest’s installed
+package catalog (≤2048 bytes). After password / game / disc checks, the
+server compares it to `match_caps.mods` **before seating**.
+
+Outcomes:
+
+| `op` / fields | Meaning |
+|---------------|---------|
+| `joined` + `ok:true` | In room; includes `local_slot`, `session_id`, endpoints |
+| `need_mods` + `ok:false` | Password ok, not seated; install missing packages then rejoin |
+| `error` + `code:"need_password"` | Lobby is locked; retry with password |
+| `error` + `code:"bad_password"` | Wrong password |
+| `error` + `code:"version_mismatch"` | Guest `game_version` ≠ lobby |
+| `error` + `code:"game_mismatch"` | Guest `game_name` ≠ lobby |
+| `error` + `code:"disc_mismatch"` | Guest `disc_fp` ≠ lobby (or one side empty) |
+| `error` + `code:"full"` / `"gone"` | Cannot join |
+
+On successful join every member receives `lobby_update` with the new slot map,
+peer endpoints, and ready flags. Membership changes clear everyone’s ready so
+players must re-confirm.
+
+## Missing mods (pre-join transfer)
+
+When `match_caps.mods` lists packages the guest’s `mod_offer` does not contain,
+the server does **not** seat the player. It stores a password-ok grant
+(`pending_mod_lobby`) and replies:
+
+```json
+{
+  "op": "need_mods",
+  "ok": false,
+  "code": "need_mods",
+  "lobby_id": "...",
+  "host_player_id": "...",
+  "mods": [ { "id": "psx.foo", "ver": "1.0.0", "n": "Foo", "f": "wide", "b": true, "size": 0 } ],
+  "can_transfer": true
+}
+```
+
+The client prompts before fully joining. Accept starts a **host↔guest ICE
+data path** (same libjuice stack as waiting-room RTT). Package bytes never
+cross the lobby WebSocket — the VPS only relays tiny SDP/candidate JSON.
+LAN/direct matches have no transfer path (join vanilla). There is no
+lobby-imposed archive size cap; STORE zip32 still cannot exceed 4 GiB per
+file/archive.
+
+```json
+{ "op": "mod_xfer_start", "lobby_id": "..." }
+```
+
+Server → lobby host:
+
+```json
+{ "op": "mod_xfer_pull", "from_player_id": "…guest…", "lobby_id": "…", "mods": [ … ] }
+```
+
+ICE signaling (pending guest ↔ host only; **not** seated `signal`). Host is
+ICE-controlling. Relayed only if the sender is the lobby host or a client
+with `pending_mod_lobby` for that room:
+
+```json
+{
+  "op": "mod_signal",
+  "lobby_id": "…",
+  "to_player_id": "…peer…",
+  "type": 1,
+  "flag": 0,
+  "text": "…"
+}
+```
+
+Abort / export failure (still WS; no file bytes):
+
+```json
+{ "op": "mod_xfer_fail", "to_player_id": "…guest…", "error": "export failed" }
+{ "op": "mod_xfer_cancel" }
+```
+
+Guest installs received `.psxmod` zips, then sends `join` again with an updated
+`mod_offer`. Cancel clears `pending_mod_lobby` (not seated). If ICE cannot
+hole-punch, juice may fall back to TURN (same Coturn as waiting-room ICE) —
+that is last-resort connectivity, not lobby-VPS file relay.
+
+## Lobby room (`lobby_update`)
+
+Server → members (after join, leave, set_ready, etc.):
+
+```json
+{
+  "op": "lobby_update",
+  "lobby_id": "...",
+  "session_id": 1,
+  "host_endpoint": "127.0.0.1:7777",
+  "guest_endpoint": "127.0.0.1:7778",
+  "player_count": 2,
+  "max_slots": 2,
+  "host_player_id": "...",
+  "all_ready": false,
+  "slots": [
+    { "slot": 0, "player_id": "...", "display_name": "Host", "ready": true },
+    { "slot": 1, "player_id": "...", "display_name": "Guest", "ready": false,
+      "path": "direct", "path_fresh": true }
+  ]
+}
+```
+
+A seat that has sent a `path_report` carries `path` (`direct` | `relay` |
+`fail`) and `path_fresh` (whether `start` would still trust it, see "Host
+relay"), so a host-relay room can show which guests have proven they reach
+the host before Play. Absent until the first report; cleared on join / leave
+/ kick and when the host's endpoint changes.
+
+## Ready / start / launch
+
+Client → server (any member in a lobby):
+
+```json
+{ "op": "set_ready", "ready": true }
+```
+
+Host may update caps while in the room (broadcasts `lobby_update`):
+
+```json
+{ "op": "set_match_caps", "match_caps": { "v": 1, "…": "…" } }
+```
+
+Errors: `not_in_lobby`, `not_host`, `gone`, `bad_match_caps`.
+
+### Country flags (GeoIP)
+
+With `GEOIP_DB_PATH` pointing at a MaxMind Country database (`GeoLite2-Country.mmdb`
+or GeoIP2), every client's country is resolved once, at connect, from its TCP
+source address, and published as ISO 3166-1 alpha-2: `"country"` on each
+member row of `lobby_update` / `launch`, and `"host_country"` on each
+`lobby_list` row. The field is omitted / empty when the database is not
+configured, the address is private or loopback, or the lookup has no answer.
+Clients draw it as a flag before the name. Nothing else depends on it.
+
+**Flags work with nothing installed.** A country table built from the Regional
+Internet Registries' published delegation records is committed at
+`data/ip_country.bin` and compiled into the binary, so every deployment
+resolves the same address to the same country with no account, no licence key
+and no download. `GEOIP_DB_PATH` is now an *accuracy upgrade*, not a
+prerequisite: where MaxMind has a record it wins, and where it does not the
+built-in table still answers, so adding it can only improve coverage.
+
+The trade is that RIR records give the country a range was ALLOCATED to rather
+than where it is used today, so a multinational holder or a re-routed block can
+report the registrant's country. Regenerate the table with
+`python3 tools/gen_ip_country.py`; quarterly is plenty.
+
+**No flags? The startup log says which state you are in.** `using the built-in
+RIR country table`, `GeoIP database not loaded` (with the error, and the
+built-in table still answering), or `GeoIP country database loaded; flags on`.
+Run at `RUST_LOG=debug` and each connect logs why a lookup came back empty.
+
+**Behind a reverse proxy, set `TRUST_PROXY_HEADER=1`.** The country is
+resolved from the TCP source address, which behind a proxy is the proxy --
+usually loopback, which is private, so *every* player is flagless even with a
+working database. With this set, the left-most `X-Forwarded-For` entry is used
+instead. It is off by default and must stay off unless a proxy really is in
+front: the header is trivially spoofable by anyone reaching the server
+directly, and trusting it would let a client choose its own flag.
+
+### Lobby chat
+
+Relayed lines pass through the profanity / slur filter first
+(`src/chat_filter.rs`; word list `data/chat_filter_words.txt`, a copy of
+recomp-net's `data/chat_filter_words.txt` -- keep them identical). Matches
+become one `*` per character; matching folds case, Latin diacritics,
+full-width ASCII and leetspeak, and tolerates repeated or spaced-out
+letters. `CHAT_FILTER=0` disables it; `CHAT_FILTER_EXTRA_PATH` appends a
+file of extra entries in the same format. Clients run the same filter on
+every line they display, so a LAN room without a server is filtered too.
+
+Any seated member (player or spectator) may send a line; the server echoes it
+to **everyone seated, sender included**, so the room's order is the server's
+order and no client appends its own line. Lines are not stored — a late joiner
+sees only what arrives after them. Text is trimmed, control characters are
+dropped, and it is capped at 240 characters; an empty line is ignored.
+
+```json
+{ "op": "chat", "text": "gg last time, ready when you are" }
+```
+
+Server → members:
+
+```json
+{ "op": "chat", "lobby_id": "…", "from_player_id": "…", "from": "Marisa",
+  "text": "gg last time, ready when you are" }
+```
+
+Errors: `not_in_lobby`.
+
+### Host in the gallery
+
+If the host seated itself in the gallery, `start` still succeeds (two seated
+*players* are required). The launch message carries `"host_spectates": true`,
+the relay is opened with one extra player slot, and `spectator_relay_base`
+moves up by one: the host runs the match from session slot 0 with a muted pad
+and every player seat is its lobby seat + 1 in session terms.
+
+The server also emits **system lines** on membership changes, to everyone
+seated, with no sender and `"system": true`: `"<name> has joined."`,
+`"<name> has joined as a spectator."`, `"<name> has left."`,
+`"<name> was kicked."`.
+
+```json
+{ "op": "chat", "lobby_id": "…", "from_player_id": "", "from": "",
+  "system": true, "text": "Marisa has joined." }
+```
+
+Client → server (host only; requires seated `player_count >= 2`). **The server
+relays nothing** (amended 2026-10-02: the UDP SFU and `transport=sfu` are
+removed). A match launches `transport=host` ("Host relay" below) or it does not
+start. Waiting-room `path_report` is the proof that every guest reaches the
+relay. `match_caps.force_turn` is a client delay-floor hint, not a transport
+switch.
+Ready flags are informational only — host Play is the launch authority:
+
+```json
+{ "op": "start", "match_caps": { "v": 1, "…": "…" } }
+```
+
+Optional `match_caps` on `start` overwrites the lobby’s stored blob so launch
+freezes the host’s latest settings. Errors: `not_in_lobby`, `not_host`,
+`need_players`, `relay_unavailable` (no host-relay ask, no advertised
+endpoint (legacy mode only), a spectator seated, or a guest without a fresh
+`direct` report).
+The error also carries `reason` (`no_host_relay_ask`, `host_relay_no_endpoint`,
+`host_relay_spectators` or `host_relay_unproven`; `host_relay_no_endpoint` is
+never produced when the room asks for `relay_via: "ice"`); `code` stays
+`relay_unavailable`.
+
+On success the server:
+
+1. Allocates a **new** `session_id` (monotonic) for this match — rematch after
+   return-to-lobby must not reuse the previous UDP session id (stale HELLO/BYE).
+2. Keeps `host_endpoint` / `guest_endpoint` as advertised; nothing is opened on
+   the server.
+3. Clears every slot’s `ready` (clients auto-ready again for rematch).
+4. Broadcasts to **all** members:
+
+```json
+{
+  "op": "launch",
+  "ok": true,
+  "lobby_id": "...",
+  "session_id": 2,
+  "host_endpoint": "…",
+  "guest_endpoint": "…",
+  "transport": "host",
+  "relay_host_slot": 0,
+  "player_count": 2,
+  "max_slots": 2,
+  "slots": [ … ],
+  "match_caps": { "v": 1, "…": "…" }
+}
+```
+
+`transport` is always `"host"`. `relay_host_slot` is the lobby seat that runs
+the relay hub: the host's seat in a hosted room, the negotiated seat in an
+automatch room (which has no host). Every other seat starts LAN transport to
+`host_endpoint`. Guests apply `match_caps` (when present) before booting so
+both peers share sim-affecting settings. Direct IP / LAN file lobbies (no MotK
+WS seat) stay on local UDP and do not use this path.
+
+## Host relay (2026-09-29; ICE fallback since 2026-10-03)
+
+A host relays its own match: the Retro hub runs
+recomp-net's LAN hub in the host's game process and every guest dials it
+(Retro-Launcher `docs/NETPLAY_DIRECT.md`).
+
+1. **The ask:** `match_caps.relay = "host"` (at `create`, `set_match_caps` or
+   `start`).
+2. **The address:** (since 2026-10-02 it must be the client's own: an IP
+   literal, equal to the address the server sees for its WebSocket unless
+   that address is private/loopback; otherwise `bad_host_endpoint`. The same
+   rule applies to the automatch `host_endpoint` offer, and an explicit host
+   in `host_bind` / `guest_bind` that is not the client's own is replaced by
+   its address.) The host advertises its reachable UDP endpoint with
+   `set_host_endpoint` (the hub's STUN / UPnP / NAT-PMP result). Changing it
+   clears every guest's path report: the new address must be proven again.
+3. **The proof:** each guest probes the host's `host_endpoint` (from
+   `lobby_update`) while seated and sends `path_report` `direct` when the host
+   answered, `fail` when not.
+4. **The decision, at `start`** (`start_transport`): the match uses the host
+   relay when the ask is there, `host_endpoint` is set, **every** seated
+   non-relay player's latest report is `direct` and at most 120 s old, and **no
+   spectator is seated** (`host_relay_decision`). Otherwise a room of exactly
+   two players with nobody in the gallery starts on **ICE**: the players
+   connect peer-to-peer with STUN and the TURN credentials from
+   `get_turn_credentials`, signalled with `op: signal`, so no port has to be
+   reachable. Anything else fails `relay_unavailable` with a `reason`:
+   `host_relay_spectators`, `ice_needs_two_players`, or (automatch, before its
+   proof window closes) the host-relay gate. Automatch waits for the proof
+   first and falls back to ICE once the window closes.
+5. **`launch`** carries `transport: "host"` with `relay_host_slot` and
+   `host_endpoint` (guests start LAN transport to it; the host binds its port),
+   or `transport: "ice"` with no `relay_host_slot` (both players start ICE).
+
+### Host relay over ICE (`relay_via: "ice"`)
+
+Every online room is in this mode (2026-10-10). `sanitize_match_caps` sets
+`relay: "host"` and `relay_via: "ice"` on every `match_caps` object the server
+accepts -- create, `set_match_caps` and start -- whatever the host sent, so a
+client that left the old opt-in off, or asked for the forwarded-port relay, is
+still put on ICE and its guests are told to build their agents. The legacy
+mode above survives only in LAN / Direct IP rooms, which never reach the
+server, and in non-ICE automatch pairs. In ICE
+mode the guests reach the relay host through an ICE connection negotiated over
+`signal` (types 130..136) instead of dialing an advertised UDP endpoint, so:
+
+- `host_relay_decision` does **not** require a `host_endpoint`. It still
+  requires the ask, **no spectator seated**, and every non-relay-host seat's
+  latest `path_report` to be `direct` and at most 120 s old. Refusal reasons
+  are unchanged (`no_host_relay_ask`, `host_relay_spectators`,
+  `host_relay_unproven`); `host_relay_no_endpoint` is not produced.
+- `set_host_endpoint` is accepted but does **not** clear guests' path proofs
+  (the endpoint is informational; the proof is the ICE path).
+- `launch` keeps `transport: "host"` and the `host_endpoint` key (an empty
+  string when none was advertised), adds `"relay_via": "ice"` (echoed from the
+  caps), and still carries `relay_host_slot` and `match_caps`. The same
+  `relay_via` appears in the automatch `joined` through `match_caps`.
+- `path_report` may carry an optional `ice` string (`host` | `srflx` | `prflx`
+  | `relay`), the candidate type in use. It is logged only; absent or unknown
+  values are fine.
+
+Every seat's latest report is published on `lobby_update` as `path` /
+`path_fresh` (above), which is what the host's waiting room shows.
+
+Clients: recomp-net's `recomp_net/host_relay.h` is the shared implementation
+of steps 2 and 3 (UPnP IGD, NAT-PMP, STUN, the probe, the two ops), driven
+from `rnet_lobby_pump`; recomp-ui's Lobby Settings owns the ask (default on).
+
+## Path report (waiting-room ICE, telemetry)
+
+While seated (2 players), ICE-capable clients may still report the selected
+candidate type from the waiting-room RTT probe (delay hints / diagnostics).
+It affects transport only in a host-relay lobby (above):
+
+```json
+{ "op": "path_report", "path": "direct" }
+```
+
+`path` is `direct` | `relay` | `fail` (an optional `ice` string names the
+candidate type, logged only; aliases: `host`/`srflx`/`prflx` →
+`direct`, `failed`/`none` → `fail`). Success: `{ "op": "path_report_ok",
+"ok": true, "path": "direct" }`. Join/leave/kick clears stored paths.
+
+## Leave / close / kick
+
+```json
+{ "op": "leave" }
+```
+
+Host may remove a guest (not the host player / not self):
+
+```json
+{ "op": "kick", "slot": 1 }
+```
+
+Errors: `not_host`, `bad_slot`, `empty_slot`, `cannot_kick`.
+
+The kicked player receives `{ "op": "kicked", "ok": true, "lobby_id": "…" }`.
+Remaining members get `lobby_update` (ready flags cleared, like guest leave).
+
+Host may swap (or move into an empty) **guest** seat. Slot 0 is the session
+host / sim authority and stays pinned; rearranging is only among seats
+1..max_slots−1. Clears ready flags and broadcasts `lobby_update` so every
+peer refreshes the member table and `local_slot`:
+
+```json
+{ "op": "move", "from_slot": 1, "to_slot": 2 }
+```
+
+`slot` is accepted as an alias for `from_slot`. Errors: `not_in_lobby`,
+`not_host`, `gone`, `bad_slot`, `empty_slot`, `host_slot_fixed`.
+
+Host disconnect or `{ "op": "close" }` destroys the lobby and notifies members
+with `lobby_closed`.
+
+## Signal relay
+
+```json
+{
+  "op": "signal",
+  "lobby_id": "...",
+  "to_player_id": "",
+  "type": 1,
+  "flag": 0,
+  "text": "..."
+}
+```
+
+Server forwards to the other member(s) with `from_player_id` stamped. Used for
+ICE (`RNetSignal`); LAN delay-sync does not require it. The server drops (no
+reply) and counts (`recomp_ws_signals_dropped_total{reason}`) a signal when:
+
+- the sender holds no seat in the lobby (`not_seated`); a spectator may not
+  send the ICE types 130..136 (inclusive) either;
+- `text` is longer than 4096 bytes (`too_big`);
+- the sender exceeds its rate cap (`rate`): a token bucket of 60 signals,
+  refilled at 60 per second, per connection.
+
+`to_player_id`, when set, narrows delivery to that member. `mod_signal` is a
+separate op and is not affected.
+
+## TURN credentials (ICE)
+
+WS lobby sessions only receive `player_id` on `welcome` (no HTTP Bearer
+token), so snesrecomp mints Coturn credentials over the socket instead of
+`GET /v1/turn-credentials`.
+
+Client → server:
+
+```json
+{ "op": "get_turn_credentials" }
+```
+
+Server → client (Coturn configured):
+
+```json
+{
+  "op": "turn_credentials",
+  "ok": true,
+  "stun_host": "coturn.example.com",
+  "stun_port": 3478,
+  "turn_host": "coturn.example.com",
+  "turn_port": 3478,
+  "turns_port": 5349,
+  "realm": "recomp-net",
+  "username": "<expiry>:<player_id>",
+  "password": "<base64 HMAC>",
+  "ttl_secs": 86400
+}
+```
+
+Server → client when Coturn env is missing or mint fails:
+
+```json
+{ "op": "turn_credentials", "ok": false, "error": "coturn_unconfigured" }
+```
+
+Same HMAC mint as HTTP (`docs/COTURN.md`). Clients should request after
+`welcome` / before ICE gather; ICE still prefers host/srflx over relay.
+
+## Keepalive
+
+Either side may send `{ "op": "ping" }`; reply is `{ "op": "pong" }`.
+
+## Related
+
+- Architecture: [HOW_IT_WORKS.md](HOW_IT_WORKS.md)
+- HTTP `/v1` rooms API: [LOBBY.md](LOBBY.md)
+- Privacy: [PRIVACY.md](PRIVACY.md)
+
+## Backwards compatibility with pre-Discord clients
+
+Discord login is **additive**. A client that has never heard of it connects,
+lists, joins, seats, chats and hosts exactly as it did before, and that is a
+promise the code keeps rather than a note asking people to be careful.
+
+How it holds:
+
+- **The connection key did not change.** A connection is still identified by
+  the ephemeral `Uuid::new_v4()` minted at connect. An authenticated account is
+  attached *beside* it, never in place of it, so every lobby, seat, signal and
+  relay path is untouched.
+- **`hello` gained an optional field and no required one.** Absent, the client
+  is a `Guest` and names itself with `display_name`, as always. Present and
+  valid, the server owns the name (`netplay_handle`) so it can survive a
+  reconnect and carry a report.
+- **The schema migration is additive.** `002` only adds columns, and its unique
+  index on `discord_id` is *partial* (`WHERE discord_id IS NOT NULL`), so the
+  pre-Discord anonymous rows are unaffected.
+- **Every switch defaults to permissive.** `GuestPolicy::default()` allows
+  everything; `DISCORD_REQUIRED`, `GUEST_CAN_CHAT` and `GUEST_CAN_HOST` are all
+  opt-in. A deployment that sets none of the `DISCORD_*` variables cannot tell
+  the difference. Absent configuration means "as it always was", never
+  "quietly stricter".
+
+### `DISCORD_REQUIRED`: a closed server
+
+With `DISCORD_REQUIRED=1` the server admits only Discord-linked sessions.
+Startup fails unless sign-in is fully configured (`DISCORD_CLIENT_ID`,
+`DISCORD_CLIENT_SECRET`, `DISCORD_REDIRECT_URL`, `JWT_SECRET_CURRENT`).
+
+- A WebSocket must send `hello` with a valid `session` within 15 seconds of
+  connecting, or it is closed. A `hello` without a valid session gets `error`
+  `{"code":"login_required"}`; the socket stays open until that grace period
+  ends, so a later `hello` that does carry a session still signs it in.
+- Until signed in, only `hello` and `ping` are acted on. Any other op is
+  silently ignored, not fatal: clients queue `list` / `server_chat` before the
+  WebSocket handshake completes and send them ahead of their `hello`. Nothing
+  is sent to an unauthenticated socket (no `lobby_list`), and it is left out of
+  everyone else's players-online list.
+- `POST /v1/players` returns 403 `login_required`, and every `/v1` route that
+  authenticates a player also requires the player row to have a `discord_id`.
+- Default stays off. Turning it on locks out every client that cannot sign in,
+  so treat it as a breaking deployment. `GUEST_CAN_CHAT` / `GUEST_CAN_HOST` are
+  moot while it is on.
+
+## Join in progress (late join)
+
+Opt-in per room, added for NHL94's EASHL drop-in (docs/DROPIN.md in the game
+repo). A server without it ignores every field below and never lets a started
+room be joined; a client without it never sees them. Nothing here changes a
+room that did not ask.
+
+* `create` accepts `"late_join": true`. It implies `allow_spectators` (the
+  joiner needs a gallery seat). `created` / `lobby_update` echo `late_join`
+  and `in_progress` (= late_join && a match is running); every `list` row
+  carries both.
+* `match_state` `{ "op": "match_state", "running": true|false }` -- host only,
+  late-join rooms only. `start` sets running by itself; the host sends
+  `false` when its match ends (the server cannot see it) and `true` again for
+  a rematch. While running, the room is "in progress".
+* `join` of a late-join room whose match runs seats the joiner in the
+  **gallery** whatever player seats are free (the match's seats belong to its
+  launch; the joiner gets one through the match's own SEAT_CLAIM, see
+  recomp-net). Nobody's Ready is cleared. The joiner is then sent the room's
+  last `launch` again with `"late": true` (spectators updated); its client
+  holds it until its ICE agent to the host is COMPLETED.
+* `launch` of a late-join room carries `late_join: true` and
+  `open_slots: [lobby seats nobody held at launch]` -- every peer gives those
+  seats a session slot (CPU until somebody joins), so the slot plan is the same
+  everywhere and for a late joiner.
+* A late-join room's gallery may send the host-ICE `signal` types (130..136),
+  which every other gallery may not: its joiners connect an agent to the host
+  during the match. The host-relay decision at `start` also stops refusing a
+  room because spectators are seated (`host_relay_spectators`) -- a late
+  joiner that never got a seat must not block the next rematch.
+
+### Join in progress: guard rails
+
+* Only a match that runs on the **host relay** is joinable in progress. A
+  `start` that fell back to `transport: "ice"` (one peer pair) clears
+  `in_progress`, hands out no `late` launch, and its launch carries neither
+  `late_join` nor `open_slots`.
+* `match_state running:true` is ignored unless the room has a joinable launch
+  (a `start` on the host relay). A host that never sends `running:false` after
+  a match leaves the room in progress until its next `start` -- the server
+  cannot see a match end.
+* A late-join gallery member may send `signal` types 130..136 only while a
+  match runs and only addressed to the relay host (`to_player_id`); anything
+  else it sends in that range is dropped.
+* A running room's gallery is its only joiner table, and a joiner that claimed
+  a seat through the match stays in it until it leaves. `list` rows and
+  `lobby_update` carry `joinable` (false only when the room is in progress and
+  the gallery is full -- a `join` would answer `full`).
+* A gallery joiner (or leaver) of a late-join room does not touch
+  `guest_endpoint` nor the guests' `path_report` proofs.

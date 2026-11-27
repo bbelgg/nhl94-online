@@ -1,0 +1,30 @@
+# Pause-orphan test (drop-in), 4 seats: NHL94_SEATS=home:C,home:RD,away:C,away:G
+# (menu: Head to Head, 30-second periods). PLAYER n = seat n-1 = game pad n.
+# All four seats push at once: seat0 UP, seat1 RIGHT, seat2 UP, seat3 LEFT,
+# Menus -> on ice (as lock4.input), then seat 0 (pad 1) pauses; the test knob
+# GENESIS_SIM_TEST_ABSENT=0@<tick> drops seat 0 while the pause menu is up.
+# Expect: "pause menu orphaned" after ~300 frames and play resumes (the clock
+# moves again). Run: tools/seats/drop_checks.sh
+WAIT 600
+PRESS START 5
+WAIT 120
+PRESS START 5
+WAIT 120
+PRESS DOWN 5
+WAIT 20
+PRESS RIGHT 5
+WAIT 20
+PRESS RIGHT 5
+WAIT 20
+PRESS RIGHT 5
+WAIT 20
+PRESS START 5
+WAIT 240
+PRESS START 5
+WAIT 240
+WRITE_RAM16 0xFFD050 0x0003
+PRESS START 5
+WAIT 600
+PLAYER 1
+PRESS START 5
+WAIT 900

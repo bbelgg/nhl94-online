@@ -1,0 +1,106 @@
+# Builds names check: the demo_penalties setup, then screenshots around the injected penalty
+# (run with NHL94_FORMAT=4v4 NHL94_FORMAT_TEST_PENALTY=1900:0:4,2600:1:4; paths are absolute -- edit).
+WAIT 600
+PRESS START 5
+WAIT 120
+PRESS START 5
+WAIT 120
+PRESS DOWN 5
+WAIT 20
+PRESS RIGHT 5
+WAIT 20
+PRESS RIGHT 5
+WAIT 20
+PRESS RIGHT 5
+WAIT 20
+PRESS RIGHT 5
+WAIT 20
+PRESS START 5
+WAIT 240
+PRESS START 5
+WAIT 240
+WRITE_RAM16 0xFFD056 0x0001
+WRITE_RAM16 0xFFD058 0x0000
+PRESS START 5
+WAIT 1650
+WAIT 40
+SCREENSHOT /tmp/nhl94-online-build/eashl/out-builds/shot_00.png
+WAIT 40
+SCREENSHOT /tmp/nhl94-online-build/eashl/out-builds/shot_01.png
+WAIT 40
+SCREENSHOT /tmp/nhl94-online-build/eashl/out-builds/shot_02.png
+WAIT 40
+SCREENSHOT /tmp/nhl94-online-build/eashl/out-builds/shot_03.png
+WAIT 40
+SCREENSHOT /tmp/nhl94-online-build/eashl/out-builds/shot_04.png
+WAIT 40
+SCREENSHOT /tmp/nhl94-online-build/eashl/out-builds/shot_05.png
+WAIT 40
+SCREENSHOT /tmp/nhl94-online-build/eashl/out-builds/shot_06.png
+WAIT 40
+SCREENSHOT /tmp/nhl94-online-build/eashl/out-builds/shot_07.png
+WAIT 40
+SCREENSHOT /tmp/nhl94-online-build/eashl/out-builds/shot_08.png
+WAIT 40
+SCREENSHOT /tmp/nhl94-online-build/eashl/out-builds/shot_09.png
+WAIT 40
+SCREENSHOT /tmp/nhl94-online-build/eashl/out-builds/shot_10.png
+WAIT 40
+SCREENSHOT /tmp/nhl94-online-build/eashl/out-builds/shot_11.png
+WAIT 40
+SCREENSHOT /tmp/nhl94-online-build/eashl/out-builds/shot_12.png
+WAIT 40
+SCREENSHOT /tmp/nhl94-online-build/eashl/out-builds/shot_13.png
+WAIT 40
+SCREENSHOT /tmp/nhl94-online-build/eashl/out-builds/shot_14.png
+WAIT 40
+SCREENSHOT /tmp/nhl94-online-build/eashl/out-builds/shot_15.png
+WAIT 40
+SCREENSHOT /tmp/nhl94-online-build/eashl/out-builds/shot_16.png
+WAIT 40
+SCREENSHOT /tmp/nhl94-online-build/eashl/out-builds/shot_17.png
+WAIT 40
+SCREENSHOT /tmp/nhl94-online-build/eashl/out-builds/shot_18.png
+WAIT 40
+SCREENSHOT /tmp/nhl94-online-build/eashl/out-builds/shot_19.png
+WAIT 40
+SCREENSHOT /tmp/nhl94-online-build/eashl/out-builds/shot_20.png
+WAIT 40
+SCREENSHOT /tmp/nhl94-online-build/eashl/out-builds/shot_21.png
+WAIT 40
+SCREENSHOT /tmp/nhl94-online-build/eashl/out-builds/shot_22.png
+WAIT 40
+SCREENSHOT /tmp/nhl94-online-build/eashl/out-builds/shot_23.png
+WAIT 40
+SCREENSHOT /tmp/nhl94-online-build/eashl/out-builds/shot_24.png
+WAIT 40
+SCREENSHOT /tmp/nhl94-online-build/eashl/out-builds/shot_25.png
+WAIT 40
+SCREENSHOT /tmp/nhl94-online-build/eashl/out-builds/shot_26.png
+WAIT 40
+SCREENSHOT /tmp/nhl94-online-build/eashl/out-builds/shot_27.png
+WAIT 40
+SCREENSHOT /tmp/nhl94-online-build/eashl/out-builds/shot_28.png
+WAIT 40
+SCREENSHOT /tmp/nhl94-online-build/eashl/out-builds/shot_29.png
+WAIT 40
+SCREENSHOT /tmp/nhl94-online-build/eashl/out-builds/shot_30.png
+WAIT 40
+SCREENSHOT /tmp/nhl94-online-build/eashl/out-builds/shot_31.png
+WAIT 40
+SCREENSHOT /tmp/nhl94-online-build/eashl/out-builds/shot_32.png
+WAIT 40
+SCREENSHOT /tmp/nhl94-online-build/eashl/out-builds/shot_33.png
+WAIT 40
+SCREENSHOT /tmp/nhl94-online-build/eashl/out-builds/shot_34.png
+WAIT 40
+SCREENSHOT /tmp/nhl94-online-build/eashl/out-builds/shot_35.png
+WAIT 40
+SCREENSHOT /tmp/nhl94-online-build/eashl/out-builds/shot_36.png
+WAIT 40
+SCREENSHOT /tmp/nhl94-online-build/eashl/out-builds/shot_37.png
+WAIT 40
+SCREENSHOT /tmp/nhl94-online-build/eashl/out-builds/shot_38.png
+WAIT 40
+SCREENSHOT /tmp/nhl94-online-build/eashl/out-builds/shot_39.png
+WAIT 60

@@ -1,0 +1,249 @@
+#!/usr/bin/env python3
+"""Execute real generated C for nested RTS stack skips, including tail splits.
+
+No game ROM is needed. Pass a built GenesisRecomp and a native GCC-compatible
+C compiler. The C harness supplies only the memory bus and timing boundary;
+dispatch, calls, stack adjustment and return propagation come from codegen.
+"""
+import argparse
+import os
+from pathlib import Path
+import subprocess
+import tempfile
+
+CONFIG = """[game]
+output_prefix = "skip"
+[functions]
+extra = [0x200, 0x240, 0x280, 0x2C0, 0x2E0, 0x320]
+[ram_layout]
+game_mode = 0
+vint_runcount = 0
+vint_routine = 0
+plc_pending = 0
+initial_ssp = 0xFFFE00
+vbla_stack = 0
+intr_stack = 0
+player_object = 0
+level_modes = []
+"""
+HARNESS = r'''
+#include "genesis_runtime.h"
+#include "game_spec.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+M68KState g_cpu;
+uint8_t g_rom[0x400000], g_ram[0x10000];
+const GameSpec g_game_spec = {0};
+uint64_t g_native_insn_count, g_native_span_count;
+uint64_t g_frame_count;
+uint64_t g_native_direct_calls,g_native_direct_tails;
+GenesisNativeRegisterBudget g_native_register_budget={0,0,0,1,0,0};
+uint32_t g_cycle_accumulator, g_audio_cycle_counter, g_vblank_threshold = 0xFFFFFFFFu;
+int pending, *g_rte_pending_ptr = &pending, g_early_return, g_ws_margin;
+uint8_t m68k_read8(uint32_t a) { return g_ram[a & 65535]; }
+uint16_t m68k_read16(uint32_t a) { return (m68k_read8(a)<<8)|m68k_read8(a+1); }
+uint32_t m68k_read32(uint32_t a) { return ((uint32_t)m68k_read16(a)<<16)|m68k_read16(a+2); }
+void m68k_write8(uint32_t a,uint8_t v) { g_ram[a&65535]=v; }
+void m68k_write16(uint32_t a,uint16_t v) { m68k_write8(a,v>>8);m68k_write8(a+1,v); }
+void m68k_write32(uint32_t a,uint32_t v) { m68k_write16(a,v>>16);m68k_write16(a+2,v); }
+void recomp_push_return(uint32_t a) { g_cpu.A[7]-=4;m68k_write32(g_cpu.A[7],a); }
+void glue_check_vblank(void) { abort(); }
+void glue_sr_written(void) { if(g_cpu.SR!=0x2700u)abort(); }
+uint32_t recomp_resolve_ram_trampoline(uint32_t a) { return a; }
+static unsigned dynamic_visits,native_visits,guard_visits,guard_mode;
+int recomp_dispatch_ram_stub(uint32_t a) {
+    if(a==0x800000u){++dynamic_visits;return 1;}
+    if(a==0x800004u) {
+        if(++guard_visits>2000100u)return 1;
+        if(guard_mode==1 && !(guard_visits%1024u))++g_frame_count;
+        recomp_tail_call(a);return 1;
+    }
+    return 0;
+}
+void genesis_log_dispatch_miss(uint32_t a) { fprintf(stderr,"miss %x\n",a); abort(); }
+void hybrid_jmp_interpret(uint32_t a) { call_by_address(a); }
+void hybrid_call_interpret(uint32_t a) { call_by_address(a); }
+void genesis_log_interior_label_miss(uint32_t a) { genesis_log_dispatch_miss(a); }
+#ifdef GENESIS_HAS_NATIVE_CALL_FRAME
+static unsigned walked;
+static void walk(int pending,uint32_t addr,void *user) {
+    if(user!=&walked || (pending && addr!=0x800000u && addr!=0x800002u))abort();
+    ++walked;
+}
+static void native_target(void) { ++native_visits; }
+static void overwrite_static(void) {
+    RECOMP_TAIL_NATIVE(0x800002u,native_target);
+    recomp_tail_call(0x800000u); /* A dynamic transfer must erase a stale pointer. */
+}
+static void overwrite_dynamic(void) {
+    recomp_tail_call(0x800000u);
+    RECOMP_TAIL_NATIVE(0x800002u,native_target);
+}
+static void suspended(void) {
+    void *saved=recomp_tail_frame_get();
+    if(!saved)abort();
+    recomp_tail_frame_set(NULL);
+    RECOMP_CALL_NATIVE(native_target);
+    if(recomp_tail_frame_get())abort();
+    recomp_tail_frame_set(saved);
+    recomp_tail_call(0x800000u);
+    walked=0;recomp_tail_frame_walk(walk,&walked);
+    if(walked!=1)abort();
+}
+static void nested(void) {
+    void *parent=recomp_tail_frame_get();
+    RECOMP_CALL_NATIVE(overwrite_dynamic);
+    if(recomp_tail_frame_get()!=parent)abort();
+    RECOMP_CALL_NATIVE(overwrite_static);
+}
+static void suspended_static(void) {
+    RECOMP_TAIL_NATIVE(0x800002u,native_target);
+    void *saved=recomp_tail_frame_get();
+    recomp_tail_frame_set(NULL);
+    RECOMP_CALL_NATIVE(native_target);
+    if(recomp_tail_frame_get())abort();
+    recomp_tail_frame_set(saved);
+    walked=0;recomp_tail_frame_walk(walk,&walked);
+    if(walked!=1)abort();
+}
+static void frame_contract(void) {
+    RECOMP_CALL_NATIVE(overwrite_static);
+    if(dynamic_visits!=1 || native_visits)abort();
+    RECOMP_CALL_NATIVE(nested);
+    if(dynamic_visits!=2 || native_visits!=1)abort();
+    RECOMP_CALL_NATIVE(suspended);
+    if(dynamic_visits!=3 || native_visits!=2 || recomp_tail_frame_get())abort();
+    RECOMP_CALL_NATIVE(suspended_static);
+    if(dynamic_visits!=3 || native_visits!=4 || recomp_tail_frame_get())abort();
+}
+#endif
+int main(int argc,char **argv) {
+    int skip=atoi(argv[1]), mixed=atoi(argv[2]); (void)argc;
+    if(argc>3 && atoi(argv[3])) {
+        guard_mode=(unsigned)atoi(argv[3]);
+        recomp_call_addr(0x800004u);
+        return guard_mode==1 && guard_visits==2000101u ? 0 : 1;
+    }
+    g_cpu.A[7]=0xFFFE00; g_cpu.SR=0x2700;
+    recomp_call_addr(0x200);
+    if(argc>4) {
+        int captures=atoi(argv[4]);
+        if(captures && g_cpu.D[4]!=(argc>5?(unsigned)strtoul(argv[5],NULL,0):0x288u))abort();
+        if(captures==2 && g_cpu.D[5]!=0x246u)abort();
+    }
+    if (g_cpu.D[0]!=(skip<3 ? 42u:0u) || g_cpu.D[1]!=(skip<2 ? 1u:0u) ||
+        g_cpu.D[2]!=(skip<1 ? 2u:0u) || g_cpu.D[3]!=(mixed?0x56781234u:0u) ||
+        g_cpu.A[7]!=0xFFFE00 || pending) {
+        fprintf(stderr,"skip=%d D0=%u D1=%u D2=%u A7=%x pending=%d\n",skip,
+                g_cpu.D[0],g_cpu.D[1],g_cpu.D[2],g_cpu.A[7],pending); return 1;
+    }
+#ifdef GENESIS_HAS_NATIVE_CALL_FRAME
+    if(!g_native_direct_calls || recomp_tail_frame_get())abort();
+    frame_contract();
+#else
+    if(g_native_direct_calls || g_native_direct_tails)abort();
+#endif
+    return 0;
+}
+'''
+
+def run(cmd, cwd):
+    p = subprocess.run([str(x) for x in cmd], cwd=cwd, capture_output=True, text=True)
+    if p.returncode:
+        raise RuntimeError(f"{cmd[0]} failed ({p.returncode})\n{p.stdout}\n{p.stderr}")
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--recompiler", type=Path, required=True)
+    compiler = ap.add_mutually_exclusive_group(required=True)
+    compiler.add_argument("--cc", type=Path)
+    compiler.add_argument("--cmake", type=Path)
+    ap.add_argument("--disable-native-frame", action="store_true")
+    args = ap.parse_args()
+    root = Path(__file__).resolve().parents[2]
+    with tempfile.TemporaryDirectory(prefix="genesis-stack-skip-") as temp:
+        td = Path(temp)
+        (td/"game.toml").write_text(CONFIG)
+        (td/"harness.c").write_text(HARNESS)
+        for slots,form in ((0,'reconstructed-frame'),(0,'quick'),(1,'quick'),(2,'quick'),
+                           (3,'adda-word'),(3,'adda-long'),(3,'suba-negative'),
+                           (3,'balanced-adda-suba'),
+                           (0,'indirect-normal'),(1,'capture1'),(2,'capture2'),
+                           (2,'capture-conditional2'),(1,'capture-conditional1'),(0,'conditional-plain'),(2,'direct-capture2'),(2,'direct-movem2'),
+                           (1,'word-capture1'),(2,'word-mixed2')):
+            for split,mixed in ((False,False),(True,False),(False,True),(True,True)):
+                indirect=form.startswith('capture') or form in ('indirect-normal','conditional-plain','reconstructed-frame')
+                if (indirect or form in ('direct-capture2','direct-movem2','word-capture1','word-mixed2')) and (split or mixed): continue
+                captures=2 if form in ('capture2','capture-conditional2') else 2 if form in ('direct-capture2','direct-movem2') else 1 if form in ('capture1','capture-conditional1') else 0
+                rom = bytearray(b"\xff"*0x400)
+                rom[0:8] = bytes.fromhex("00fffe00 00000200")
+                rom[0x100:0x200] = b" "*256
+                rom[0x100:0x104] = b"SEGA"
+                for addr,target,reg,value in ((0x200,0x240,0,42),(0x240,0x280,1,1),(0x280,0x2C0,2,2)):
+                    code = bytes.fromhex("4eb9") + target.to_bytes(4,"big") + bytes([0x70+reg*2,value,0x4e,0x75])
+                    if indirect and addr==0x280:
+                        code=bytes.fromhex('41f9 000002c0 4e90 7402 4e75')
+                        if form=='conditional-plain':code=bytes.fromhex('7c01')+code
+                        if form=='reconstructed-frame':
+                            # The existing split-frame proof fixture returns below its
+                            # JSR slot, with a live two-byte-aligned stack frame.
+                            code=bytes.fromhex('41f9 000002c0 4e90 46df 4cdf 0202 4e5e 7402 4e75')
+                    rom[addr:addr+len(code)] = code
+                adjust = bytes.fromhex({
+                    'quick':{0:"4e71",1:"584f",2:"504f"}.get(slots,''),
+                    'adda-word':'defc000c',
+                    'adda-long':'dffc0000000c',
+                    'suba-negative':'9efcfff4',
+                    'balanced-adda-suba':'defcfff8 9ffcfffffff8 defc000c',
+                    'indirect-normal':'4e71',
+                    'reconstructed-frame':'205f 4e56 0000 48e7 4040 40e7 2f08',
+                    'capture1':'281f',
+                    'capture2':'281f2a1f',
+                    'capture-conditional2':'4a466604281f2a1f',
+                    'capture-conditional1':'4a466602281f',
+                    'conditional-plain':'4a466602281f',
+                    'direct-capture2':'281f2a1f',
+                    'direct-movem2':'4cdf0030',
+                    'word-capture1':'381f3a1f',
+                    'word-mixed2':'381f2a1f3c1f',
+                }[form])
+                # IceCap column: save two word velocities, restore one long.
+                # The data must not be mistaken for a consumed return slot.
+                push = bytes.fromhex("3f3c1234 3f3c5678") if mixed else b""
+                pop = bytes.fromhex("261f") if mixed else b""
+                if split:
+                    head = push + bytes.fromhex("4ef9 000002e0")
+                    tail = pop + adjust + bytes.fromhex("4ef9 00000320")
+                    rom[0x2C0:0x2C0+len(head)] = head
+                    rom[0x2E0:0x2E0+len(tail)] = tail
+                    rom[0x320:0x322] = bytes.fromhex("4e75")
+                else:
+                    body = push + pop + adjust + bytes.fromhex("4e75")
+                    rom[0x2C0:0x2C0+len(body)] = body
+                    rom[0x2E0:0x2E2] = rom[0x320:0x322] = bytes.fromhex("4e75")
+                (td/"test.bin").write_bytes(rom)
+                run([args.recompiler.resolve(),"test.bin","--game","game.toml","--output-dir","generated"],td)
+                exe = td/"test.exe"
+                sources = sorted((td/"generated").glob("skip_part*.c")) + [td/"generated/skip_dispatch.c",td/"harness.c"]
+                if args.cmake:
+                    listing="\n".join('  "'+p.as_posix()+'"' for p in sources)
+                    flags='target_compile_definitions(skip PRIVATE GENESIS_DISABLE_NATIVE_CALL_FRAME=1)\n' if args.disable_native_frame else ''
+                    (td/"CMakeLists.txt").write_text('cmake_minimum_required(VERSION 3.16)\nproject(Skip C)\nadd_executable(skip\n'+listing+'\n)\ntarget_include_directories(skip PRIVATE "'+(root/"runner/include").as_posix()+'" "'+(root/"runner").as_posix()+'")\ntarget_compile_features(skip PRIVATE c_std_11)\n'+flags,encoding="utf8")
+                    configure=[args.cmake.resolve(),"-S",td,"-B",td/"build"]
+                    if os.name=="nt":configure += ["-G","Visual Studio 17 2022","-A","x64"]
+                    run(configure,td)
+                    run([args.cmake.resolve(),"--build",td/"build","--config","Release","--parallel","1"],td)
+                    exe=td/"build"/("Release/skip.exe" if os.name=="nt" else "skip")
+                else:
+                    flags=["-DGENESIS_DISABLE_NATIVE_CALL_FRAME=1"] if args.disable_native_frame else []
+                    run([args.cc.resolve(),"-std=c11","-O1",*flags,"-I",root/"runner/include","-I",root/"runner",*sources,"-o",exe],td)
+                run([exe,str(slots),str(int(mixed)),"0",str(captures),"0x286" if form in ("direct-capture2","direct-movem2") else "0x288"],td)
+                print(f"PASS skip {slots} return slots, form={form}, split={split}, mixed-width-data={mixed}")
+                if not slots and not split and not mixed:
+                    run([exe,"0","0","1"],td)
+                    stalled=subprocess.run([str(exe),"0","0","2"],cwd=td,capture_output=True)
+                    assert stalled.returncode==2 and b"tail-dispatch runaway" in stalled.stderr
+                    print("PASS multi-frame tail chain and retained no-progress runaway guard")
+
+if __name__ == "__main__": main()

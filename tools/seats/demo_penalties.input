@@ -1,0 +1,27 @@
+# All-AI Demo game with Penalties ON and Line changes ON (OptPen / OptLine written before the
+# game starts; the Demo default has line changes off), for the 4v4
+# power-play checks (docs/FOUR_ON_FOUR_PLAN.md section 8): run with NHL94_FORMAT=4v4 and
+# NHL94_FORMAT_TEST_PENALTY (test only) to force minors; AI on both sides can score on the PP.
+WAIT 600
+PRESS START 5
+WAIT 120
+PRESS START 5
+WAIT 120
+PRESS DOWN 5
+WAIT 20
+PRESS RIGHT 5
+WAIT 20
+PRESS RIGHT 5
+WAIT 20
+PRESS RIGHT 5
+WAIT 20
+PRESS RIGHT 5
+WAIT 20
+PRESS START 5
+WAIT 240
+PRESS START 5
+WAIT 240
+WRITE_RAM16 0xFFD056 0x0001
+WRITE_RAM16 0xFFD058 0x0000
+PRESS START 5
+WAIT 30000

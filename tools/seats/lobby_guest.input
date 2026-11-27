@@ -1,0 +1,6 @@
+# Lobby selftest guest (slot 1): idle in the menus, then skate UP.
+WAIT 1850
+HOLD UP
+WAIT 150
+RELEASE UP
+WAIT 3000

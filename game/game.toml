@@ -1,0 +1,325 @@
+# game.toml — NHL Hockey '94 (Electronic Arts, 1993). USA/Europe NTSC, 1 MB ROM.
+# 68000, flat $000000-$0FFFFF, identity-mapped. Battery SRAM declared in the
+# header ("RA" $F8 $20, odd bytes $200001-$203FFF) — the runner maps it from the
+# header automatically, so GameSpec.sram_start/sram_end stay 0.
+#
+# ROM identity: header "NHL Hockey '94", serial GM T-50656 -00, region "UE",
+# CRC32 9438F5DD, size 0x100000. Vectors (from $000000):
+#   SSP   $00FFFFF6   (R_StackSP; RunGame at $0076B8 later sets sp=$FFFE)
+#   Entry $00000200   (SetupGame)
+#   H-int $00015E6C   (ExpReturn — a bare RTE, no HBlank work)
+#   V-int $000076B2   (VBlankInt — see below)
+#
+# Discovery posture: NHL 94 HAS a byte-perfect disassembly (MarkeyJester, 2016,
+# asm68k syntax; see docs/DISASSEMBLY.md). Discovery is driven by its labels
+# and code-address oracle below, plus the heuristic finder. Every address in
+# this file was read from the reassembled listing (PRINCIPLES #16), never from
+# dispatch_misses.toml alone.
+
+[game]
+output_prefix = "nhl94"
+
+# Disassembly evidence (PRINCIPLES #16), generated from the byte-verified
+# asm68k listing by tools/nhl94_disassembly.py (see docs/DISASSEMBLY.md):
+#   annotations     - function names -> readable generated C (from the IDA Pro
+#                     export game/nhl94.xml, listing names as fallback)
+#   code_addrs_file - every instruction start; gates data-as-code promotion and
+#                     lets the recompiler resume callers past inline JSR
+#                     arguments (EA's `jsr Print; dc.b "text"` idiom)
+#   discovery_files - sub_/named labels as entries, loc_ labels as CFG seeds,
+#                     plus register-indexed dispatch tables read from the ROM
+annotations      = "annotations_from_disasm.csv"
+code_addrs_file  = "nhl94.code_addrs.txt"
+discovery_files  = ["nhl94.disasm_labels.toml", "nhl94.disasm_jumptables.toml"]
+# No PC-indexed (d8,PC,Xn) jump tables exist in this ROM; its dispatch tables
+# are register-indexed and declared in nhl94.disasm_jumptables.toml. The
+# auto-walk is therefore a no-op here and stays off as for the Sonic titles.
+jump_table_autodiscovery = false
+# EA's call idioms need the generator's runtime return-slot calls: the
+# `move.l (ptr).w,-(sp); rts` V-blank trampoline, `addq.w #4,sp` dispatcher
+# exits, inline-argument printers ([[inline_args]] requires this) and
+# `pea Cont; bra Body` continuations. Off = upstream code generation.
+dynamic_return_slots = true
+
+# ---------------------------------------------------------------------------
+# Per-game RAM layout. The three stack fields are LOAD-BEARING and use the
+# reset SSP from the vector table. The Sonic-shaped tracking fields are
+# cosmetic (boot_smoke / telemetry only):
+#   vint_runcount -> $FFB03E, the word incremented once per VBlank by the
+#                    default V-blank routine sub_15E4C (`addq.w #1,($FFFFB03E).w`).
+#   vint_routine  -> $FFB03A, the longword pointer VBlankInt dispatches through.
+#   game_mode / player_object are not yet identified in the disasm; left 0.
+# ---------------------------------------------------------------------------
+[ram_layout]
+game_mode      = 0x000000
+vint_runcount  = 0xFFB03E
+vint_routine   = 0xFFB03A
+plc_pending    = 0x000000     # no Sonic-style PLC system
+initial_ssp    = 0xFFFFF6     # reset SSP (LOAD-BEARING)
+vbla_stack     = 0xFFFFF6     # V-int handler stack base (LOAD-BEARING)
+intr_stack     = 0x000000     # 0 = handlers push on the LIVE A7 (hardware). RunGame
+                              # sets sp=$FFFE, so the main stack owns the reset-SSP
+                              # region; a relocated handler stack there would sit on
+                              # top of live main-program return slots.
+player_object  = 0x000000
+level_modes    = []
+
+# ---------------------------------------------------------------------------
+# VBlankInt ($0076B2) is `move.l ($FFFFB03A).w,-(sp); rts` — an indirect jump
+# through a RAM-held routine pointer. The listing shows exactly four routines
+# ever stored there; they are seeded here so each is a callable root:
+#   sub_15E4C  default frame routine (installed by sub_17A18 and WaitVBlank)
+#   sub_15D9A  installed at $016B8E / $016C78
+#   sub_17692  installed at $01733E
+#   sub_1A148  installed at $01A050 (sound driver setup)
+# The recompiler must treat the push-then-RTS idiom as a computed jump for the
+# handler to work (bring-up step 3); seeding the targets is necessary either way.
+# ---------------------------------------------------------------------------
+[functions]
+extra = [
+  0x000200,   # SetupGame (reset entry)
+  0x0076B2,   # VBlankInt (IRQ6)
+  0x015E6C,   # ExpReturn (IRQ4 and unused vectors — bare RTE)
+  0x015E4C, 0x015D9A, 0x017692, 0x01A148,   # V-blank routines (see above)
+]
+late_extra = []
+blacklist = []
+
+# ---------------------------------------------------------------------------
+# Inline-argument callees: the text printer family is called as
+#     jsr <printer> ; dc.w <total length> ; dc.b <control bytes / text>
+# and steps the return address past the block (`move.l a1,4(sp)`). The word
+# after the call is the block's total byte length, so the caller resumes at
+# ret + word. Declaring them makes every continuation static even where the
+# disassembly mis-decoded the inline bytes as instructions (e.g. $007FC4,
+# $0F84F6); the runtime return-slot check still governs execution.
+# ---------------------------------------------------------------------------
+[[inline_args]]
+callee = 0x011B92   # sub_11B92: print inline string (bit 3 of $C2F8 selects font)
+length = "word"
+
+[[inline_args]]
+callee = 0x011A36   # sub_11A36: print inline string via sub_11A48
+length = "word"
+
+[[inline_args]]
+callee = 0x011DE2   # sub_11DE2: print inline string via sub_11DF4 (big glyphs)
+length = "word"
+
+# ---------------------------------------------------------------------------
+# Per-player views (game/nhl94_view.c, runner/multiview.h). One audited
+# pre-instruction site; the hook returns 0 (never replaces the instruction)
+# and does nothing unless a speculative view tick is running, so the
+# authoritative simulation is untouched.
+#   $007998  `jmp setvideo` at the end of DoGameFrame (hockey94.asm:187):
+#            game logic, checkwindow (camera) and updatereplay of this frame
+#            are done; setvideo is about to build the sprite list and queue
+#            the rink rows for the next vblank. The view retargets the camera
+#            and applies the 180-degree mirror here.
+# ---------------------------------------------------------------------------
+[[widescreen_site]]
+addr = 0x007998
+kind = "game_hook"
+#   $015F28  setvideo `bset #dfok,(disflags).w` (video94.asm:125): the
+#            sprite list and DMA queue of this frame are complete.
+#   $015DB2  VBlank `bsr DumpSprites` (video94.asm:15), reached only when
+#            dfok was set: the list is being uploaded this vblank.
+#            Together they tell the view when its frame is on screen.
+[[widescreen_site]]
+addr = 0x015F28
+kind = "game_hook"
+
+[[widescreen_site]]
+addr = 0x015DB2
+kind = "game_hook"
+
+#   $016920  find3d (video94.asm:987): REPLACED only in a zoomed view's
+#            speculative tick (nhl94_view.c find3d_zoomed: the same
+#            projection with the cull widened by the view's extra columns /
+#            rows); everywhere else the hook returns 0 and the game's own
+#            routine runs.
+[[widescreen_site]]
+addr = 0x016920
+kind = "game_hook"
+
+#   $016480  checksso (video94.asm:595): SKIPPED (rts) only in a zoomed
+#            view's speculative tick -- its off-screen arrows would sit at
+#            the 256x224 window's edges, inside the bigger picture.
+[[widescreen_site]]
+addr = 0x016480
+kind = "game_hook"
+
+# ---------------------------------------------------------------------------
+# Player lock (game/nhl94_seats.c, docs/PLAYER_LOCK.md). Inert unless a seat
+# list is configured (NHL94_SEATS / --seats); then they act on the
+# authoritative simulation, from guest RAM and the tick's sealed input only.
+#   $01A370  ReadJoyData (sound94.asm): REPLACED -- PadRaw1..4 from the
+#            seats' GenesisSimInput pads (no port / 4 Way Play wiring).
+#   $00A9D6  updateplayers entry: cont1..4team / c1..4playernum / pfjoycon
+#            := the seats' role objects (restorepl-style release of others).
+#   $00B0E8  doinput entry: 180-degree direction remap for a pad player
+#            whose team attacks the bottom goal (pfgoal clear).
+#   $00C0BC  setc1player, $00C0DA setc2player: REFUSED (rts) while locked --
+#            every automatic or B-button pad switch funnels through them.
+#   $00D462  assgoaliectrl .cont2: clears pf3gctrl on a seat goalie, i.e.
+#            cancels the camera-distance hand-over to the AI.
+# ---------------------------------------------------------------------------
+[[widescreen_site]]
+addr = 0x01A370
+kind = "game_hook"
+
+[[widescreen_site]]
+addr = 0x00A9D6
+kind = "game_hook"
+
+[[widescreen_site]]
+addr = 0x00B0E8
+kind = "game_hook"
+
+[[widescreen_site]]
+addr = 0x00C0BC
+kind = "game_hook"
+
+[[widescreen_site]]
+addr = 0x00C0DA
+kind = "game_hook"
+
+[[widescreen_site]]
+addr = 0x00D462
+kind = "game_hook"
+
+# Virtual pads for seats 5..12 (nhl94_seats.c): updateplayers' pad-3/4 block.
+#   $00AD42  .t1 `cmp.w #$B,d6`: when d6 is a seat 5..12's player, its
+#            virtual pad (guest RAM $FFDF20) goes into pad 3's (home) or pad
+#            4's (away) slots; the game's own pad-3/4 swap then runs doinput.
+#   $00AE7C  .t1cont: swapped back (real pad 3/4 parked at $FFDFA0).
+[[widescreen_site]]
+addr = 0x00AD42
+kind = "game_hook"
+
+[[widescreen_site]]
+addr = 0x00AE7C
+kind = "game_hook"
+
+# Call for pass (nhl94_seats.c): an AI carrier passes to the seat that asked.
+#   $00E456  chk4pass `cmp.w #$C,d0`: the random "consider a pass" roll passes.
+#   $00E464  chk4pass `cmpi.w #6,SCnum(a3)`: the random candidate is the caller.
+#   $00E4F8  chk4pass `eor.w d0,d1`: waive "no pass across the blue line".
+#   $00E502  chk4pass `cmp.w #$58,d0`: waive "no backward pass".
+#   $00BD5E  dopass `tst.l d4` after the receiver loop: a0 = the caller.
+# All continue into the game's own code (offside / lane checks, passto).
+[[widescreen_site]]
+addr = 0x00E456
+kind = "game_hook"
+
+[[widescreen_site]]
+addr = 0x00E464
+kind = "game_hook"
+
+[[widescreen_site]]
+addr = 0x00BD5E
+kind = "game_hook"
+
+[[widescreen_site]]
+addr = 0x00E4F8
+kind = "game_hook"
+
+[[widescreen_site]]
+addr = 0x00E502
+kind = "game_hook"
+
+# ---------------------------------------------------------------------------
+# 4v4 format (game/nhl94_format.c, docs/FOUR_ON_FOUR_PLAN.md). Inert unless the
+# guest word FMT ($FFDFC0) is 4; only the restoreteams site latches it, from
+# the session's format (NHL94_FORMAT / --format / launcher; the host's image
+# online). Then tmap starts at 4 and G, LD, C, LW take the ice.
+#   $007806  restoreteams .r `moveq #50,d0` (after move.w #6,tmap(a2)):
+#            FMT latch; 4v4: tmap(a2) = 4, PRIO4/APL4 tables written.
+#   $015842  SetPlList, $012A06 releasepl, $012ECA getlinee (each right after
+#            `movea.l #priolist,a0`): a0 = PRIO4 (G, LD, C, LW, RD, RW, X).
+#   $00FA7A  puckfaceoff2 .t0 `adda.w d4,a1` (after movea.l #.apl,a1): a1 = APL4.
+#   $0123DE  InProgress_ap entry: REPLACED (rts) -- the 3-on-3 OT strength
+#            rule for both teams (a penalty adds a body to the other team).
+#   $01284E  PenGoalStuff `cmpi.w #6,tmap(a1)`: PenBuf cleared when the
+#            scored-on team has nobody boxed (stock: tmap == 6).
+#   $012A50  GetLowestPen .endoflist `cmpi.w #6,tmap(a3)`: rts when the
+#            power-play team has nobody boxed (stock: tmap == 6).
+#   $00F9D8  puckfaceoff2 after `bsr ResetBench`: the rule re-applied
+#            (a mid-play release's 5v5 goes back to 4v4 at the faceoff).
+# ---------------------------------------------------------------------------
+[[widescreen_site]]
+addr = 0x007806
+kind = "game_hook"
+
+[[widescreen_site]]
+addr = 0x015842
+kind = "game_hook"
+
+[[widescreen_site]]
+addr = 0x012A06
+kind = "game_hook"
+
+[[widescreen_site]]
+addr = 0x012ECA
+kind = "game_hook"
+
+[[widescreen_site]]
+addr = 0x00FA7A
+kind = "game_hook"
+
+[[widescreen_site]]
+addr = 0x0123DE
+kind = "game_hook"
+
+[[widescreen_site]]
+addr = 0x01284E
+kind = "game_hook"
+
+[[widescreen_site]]
+addr = 0x012A50
+kind = "game_hook"
+
+[[widescreen_site]]
+addr = 0x00F9D8
+kind = "game_hook"
+
+#   $01211A  PenShotChk entry: REPLACED (rts) in 4v4 -- every minor drawn in a
+#            hit is a penalty shot for the fouled team (nhl94_format.c).
+[[widescreen_site]]
+addr = 0x01211A
+kind = "game_hook"
+
+#   $0157E4  setpersonel second pass `moveq #5,d4` (4v4 only): done in C first
+#            (the stock `dbpl d3` free-object scan underflows into the other
+#            team's objects when a team needs two substitutes; nhl94_format.c).
+[[widescreen_site]]
+addr = 0x0157E4
+kind = "game_hook"
+
+#   $015788  setpersonel entry: OBSERVATION only (nhl94_seats.c setpersonel_observe logs the caller's
+#            return address, mid-play or not). Evidence for/against a mid-play "setpersonel pin";
+#            the pin itself is not shipped (docs/PLAYER_LOCK.md).
+[[widescreen_site]]
+addr = 0x015788
+kind = "game_hook"
+
+# ---------------------------------------------------------------------------
+# Per-player builds (game/nhl94_builds.c, docs/BUILDS.md): a seat plays with the
+# ratings and name of a real roster player (default: the team's 1st line player
+# of the seat's role). Guest RAM block $FFE000..$FFE28F. Gated by the player
+# lock (nhl94_seats_lock_active), so no highlights / penalty shot / shootout.
+#   $007806  restoreteams .r (above): the builds LATCH runs first, from
+#            nhl94_spec.c (the 4v4 format hook returns for this pc).
+#   $015BA6  setplayer, `move.b (a0),rostnum(a3)` right after subq.w #pldsize,a0:
+#            a0 -> the seat's build (8 rating bytes in guest RAM) -- everything
+#            setplayer computes afterwards comes from them.
+#   $018BC8  GetPlayerNamePointer: REPLACED (rts) for a roster slot that last
+#            played as a build: a0 = the build's name record, d0 = -1.
+# ---------------------------------------------------------------------------
+[[widescreen_site]]
+addr = 0x015BA6
+kind = "game_hook"
+
+[[widescreen_site]]
+addr = 0x018BC8
+kind = "game_hook"

@@ -1,0 +1,64 @@
+# Player lock test, 2 seats: NHL94_SEATS=home:C,away:G (menu: Head to Head,
+# 30-second periods). PLAYER 1 = seat 0 (home C), PLAYER 2 = seat 1 (away G).
+# Period 1: home attacks UP. Period 2: home attacks DOWN (remap check).
+WAIT 600
+PRESS START 5
+WAIT 120
+PRESS START 5
+WAIT 120
+PRESS DOWN 5
+WAIT 20
+PRESS RIGHT 5
+WAIT 20
+PRESS RIGHT 5
+WAIT 20
+PRESS RIGHT 5
+WAIT 20
+PRESS START 5
+WAIT 240
+PRESS START 5
+WAIT 240
+WRITE_RAM16 0xFFD050 0x0003
+PRESS START 5
+# ~t1395; puck drops ~t1770
+WAIT 400
+# P1 @t1795: home C up 120, right 90
+HOLD UP
+WAIT 120
+RELEASE UP
+HOLD RIGHT
+WAIT 90
+RELEASE RIGHT
+# away G (bottom-attacking in P1 -> remapped): left 90, right 90
+PLAYER 2
+HOLD LEFT
+WAIT 90
+RELEASE LEFT
+HOLD RIGHT
+WAIT 90
+RELEASE RIGHT
+PLAYER 1
+# end of period 1 (clock 0); START on the intermission menu ("Resume Game"), wait
+# for period 2 with the clock running (gmode == gmdir only)
+WAIT_RAM16 0xFFC468 0x0000
+WAIT 330
+PRESS START 5
+WAIT_RAM16 0xFFC2EA 0x0200
+WAIT 30
+# P2: home C (now attacks DOWN -> remapped) up 120, right 90
+HOLD UP
+WAIT 120
+RELEASE UP
+HOLD RIGHT
+WAIT 90
+RELEASE RIGHT
+# away G (now attacks UP, goalie at the bottom net): left 90, right 90
+PLAYER 2
+HOLD LEFT
+WAIT 90
+RELEASE LEFT
+HOLD RIGHT
+WAIT 90
+RELEASE RIGHT
+PLAYER 1
+WAIT 400

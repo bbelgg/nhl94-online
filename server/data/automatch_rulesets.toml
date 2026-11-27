@@ -1,0 +1,196 @@
+# Automatch rulesets — THE canonical set, shipped in every bundle.
+#
+# This file is tracked and maintained here, not written per deployment, so
+# that every server offers the same queues with the same match settings. A
+# player who queues on one server gets the same match they would get on
+# another; that is the whole reason this is source rather than operator
+# config. tools/bundle.sh ships it (with the rest of data/) into the release
+# ZIP, so deploying a bundle deploys these rules.
+#
+# There is no enable flag anywhere: automatch is ON for a title that has a
+# ruleset here and OFF for one that does not. A server that wants to diverge
+# — to trial a queue type, or to run a private pool — points
+# AUTOMATCH_RULESETS_PATH at its own file instead of editing this one, which
+# keeps the divergence visible in that server's environment rather than as a
+# local edit that the next bundle silently reverts.
+#
+# ---------------------------------------------------------------------------
+# ADDING A TITLE
+#
+# 1. `game_name` must equal, BYTE FOR BYTE, what that game's client announces.
+#    It is the port's own string (SNES ports build it from SNES_GAME_TITLE in
+#    their CMakeLists, or set id.game_name literally), and it is printed on
+#    the wire by the client itself:
+#        snes_lobby: hello as "…" for game "<this string>"
+#    A near-miss is not an error anywhere. The title simply has no rulesets,
+#    automatch_available answers no, and the launcher shows the button
+#    disabled — indistinguishable from automatch being off entirely.
+#
+# 2. `match_caps` is what the SERVER imposes on the room; it is not a
+#    suggestion, and the players agreed to it by queueing here. Write out
+#    EVERY key the target client reads, even where the value equals that
+#    client's default: a key left out is a decision made by whichever default
+#    happens to be compiled into the peer's build, which is the one thing an
+#    automatch room cannot afford to leave open.
+#
+# 3. The caps VOCABULARY is per-console. The SNES entries below use the keys
+#    snesrecomp/runner/src/lobby/snes_lobby_client.c parses. A PSX title uses
+#    the PSX set (bios_hle, fast_boot, turbo_loads, auto_skip_fmv, …) and
+#    ignores these; see automatch_rulesets.example.toml.
+#
+# Refused at load, loudly, with the server still starting: an empty id or
+# game_name, a duplicate (game_name, id), max_slots other than 2, match_caps
+# that is not a table or serializes over 4096 bytes, and any `mods` key at all.
+# See src/automatch.rs validate().
+#
+# Note what "vanilla only" does and does not mean. It forbids a required mod
+# PLAN (`match_caps.mods`), because the seat gate would have to run a transfer
+# with no host to prompt. It does not forbid a ruleset from pinning a setting
+# that a preloaded package provides — every player already has those, and the
+# pin is what makes both peers identical rather than what makes them differ.
+# ---------------------------------------------------------------------------
+
+
+# ONE QUEUE, deliberately. A mod set is an equality, so every additional
+# ruleset splits the population into another pool that only matches itself.
+# At this size one pool that most players fall into beats several that nobody
+# is waiting in. Add the 4:3/Japanese counterpart when there are enough
+# players for two pools to both fill.
+
+# ── Gundam Wing: Endless Duel (SNES) ────────────────────────────────────────
+# Verified against the running client 2026-09-10: the announced game_name was
+# read off the wire, and the caps keys and their defaults from that build's
+# match-caps parser.
+#
+# This queue is WIDESCREEN. The package ships preloaded in every build, so
+# there is nothing to transfer and no player can be missing it; what the
+# ruleset does is pin the margin so both peers run one geometry. The client
+# treats a margin the ruleset asked for as part of the ruleset rather than as
+# a local divergence, which is why queueing with widescreen on is allowed here
+# and queueing with, say, localization on is not.
+[[ruleset]]
+id        = "standard"
+label     = "Standard (wide, English)"
+game_name = "Gundam Wing Endless Duel"
+max_slots = 2
+
+# `game_version` is deliberately omitted here and everywhere below. The match
+# key is an equality bucket either way, so players still only ever pool with
+# their own release — but omitting the pin means a new tagged release starts
+# pooling the day it ships, with no server-side edit and no window where the
+# queue is dark because this file has not caught up.
+
+[ruleset.match_caps]
+# WIDESCREEN, at the CI pin.
+#
+# 43 is the project's own number rather than one invented here:
+# SNESRECOMP_WS_EXTRA=43 is what the widescreen probes and the P16 gate run
+# against, giving a 342-wide frame — ceil_even(256 * 4/3), the 16:9 margin.
+# Any other value would make automatch matches a geometry nothing else in the
+# project has ever measured.
+#
+# The margin MUST come from here rather than from each client, because a
+# client derives it from its own WINDOW aspect. Two players on different
+# monitors compute different margins, their published caps disagree, and the
+# sprite-bounds patch declines on both — leaving a wide frame with 4:3 sprite
+# bounds. The server naming one number is what makes the two sims identical.
+#
+# `widescreen = true` with `ws_extra = 0` is the one combination to avoid: it
+# says "run wide" and then declines to say how wide, which is precisely the
+# disagreement the client logs as "[ws-patch] netplay caps disagree".
+widescreen        = true
+widescreen_hud    = true   # always written out: absent, this key defaults to
+                           # TRUE, so spelling it is the only way false is real
+ws_extra          = 43     # margin in pixels per side (256 + 2*43 = 342)
+
+# THE MOD SET THIS QUEUE RUNS.
+#
+# Equality, not permission: a player's own sim-affecting selection must be
+# exactly this. Missing something the queue runs desyncs; so does running
+# something extra, which is why "at least this" would be the wrong rule.
+#
+# The value is the mod runtime's OWN canonical form -- one line per enabled
+# feature, sorted, with resolved option values -- and it is compared byte for
+# byte, so it is copied from a build's log rather than typed from memory. Any
+# build prints its own at startup:
+#     netplay: sim-affecting mod set for automatch:
+#     gwed.enhancement.widescreen@1.0.0/widescreen
+#     gwed.localization@1.0.0/localization language=en
+#
+# Note the version and the option value are part of it. Bumping a package to
+# 1.0.1 changes this string, and the queue then correctly refuses builds that
+# have not been updated -- which is the point, not a nuisance.
+#
+# This is the piece that makes a MOD queue possible at all. Without it a
+# ruleset can only say "vanilla", and a game whose players nearly all run a
+# translation has a queue nobody can use.
+mod_set = "gwed.enhancement.widescreen@1.0.0/widescreen\ngwed.localization@1.0.0/localization language=en\n"
+
+# COSMETIC ALLOWLIST — packages this queue exempts from the set above.
+#
+# `presentation_only` in a package's own manifest is the mod ASKING. This is
+# the queue GRANTING, and the two are deliberately different things: a cheat
+# author writes manifests too, so an exemption that a package could vote
+# itself would be no exemption at all. The runtime independently refuses a
+# claim whose plugins the executable did not classify as presentation-only, or
+# whose package ships anything beyond its manifest, so this list cannot grant
+# something that was never admissible.
+#
+# gwed.accessibility.flashguard caps how far the presented picture may move in
+# one frame, which takes the end-of-fight strobe from a 68% full-screen swing
+# at 15 Hz down to about 9%, and the flashes crossing the WCAG 2.3.1 threshold
+# from nineteen to none. It filters the finished framebuffer and touches no
+# CPU, WRAM, VRAM, OAM, CGRAM, APU or save state, so a player running it
+# simulates the identical guest frames as one who is not.
+#
+# Granting it is the point rather than a courtesy. A photosensitive player does
+# not choose their opponent, and a filter that needed the other side to have it
+# too would be unavailable in exactly the matches it exists for -- the practical
+# effect of leaving this line out is telling that player to pick between the
+# filter and playing online.
+#
+# PINNED to the package digest, so the entry names bytes rather than a name the
+# client picks for itself. Read it out of any build's own log:
+#     netplay: cosmetic allowlist: <this exact string>
+# It changes when the package changes, which is the point: an edited package is
+# a different package and has to be looked at again.
+mod_cosmetic_allow = "gwed.accessibility.flashguard@1.0.0#a48b45886662ff3b869277b593d7415250105c4b4b0e2a69ca5506e5bab4dfb7"
+ignore_aspect     = false
+rollback          = true   # the SFU path every online match runs
+
+# NO input_delay. The delay is NEGOTIATED, by the same RTT rules a
+# human-hosted room uses: the server reads both peers' measured round trip to
+# the relay and applies the launcher's own tier table (D = 3 on a short link
+# up to 10 on a long one, runway P = 4 + D). An authored delay here would be a
+# FLOOR that only ever raises that, so pinning 2 would say "delay 2" in the
+# queue picker while the match actually runs 4 or 6 -- which reads as a bug to
+# the player agreeing to it. Left out, the picker advertises "Delay auto" and
+# the accept gate shows the number this particular pair will really run.
+force_turn        = false  # let ICE choose; the relay is already in the path
+force_input_relay = false
+
+
+# ── Metal Warriors (SNES) ───────────────────────────────────────────────────
+# READY BUT NOT ENABLED — uncomment once you have confirmed this title's
+# netplay is shipping. The values are read from that port's own
+# FillMatchCaps (src/main.c), not guessed: it publishes widescreen with a
+# 71-pixel margin unconditionally, because there the wide view IS the shipped
+# product rather than a mod package, so a vanilla queue must carry it or every
+# match would disagree with what the game itself announces.
+#
+# [[ruleset]]
+# id        = "standard"
+# label     = "Standard"
+# game_name = "Metal Warriors"
+# max_slots = 2
+#
+# [ruleset.match_caps]
+# widescreen        = true
+# widescreen_hud    = true
+# ws_extra          = 71
+# ignore_aspect     = false
+# rollback          = true
+# input_delay       = 2
+# force_turn        = false
+# force_input_relay = false
+

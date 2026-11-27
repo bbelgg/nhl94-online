@@ -1,0 +1,13 @@
+# drop-in room test, every guest: idle through the menus, then skate/press so
+# each seat's pad differs from the CPU's.
+WAIT 1900
+HOLD UP
+WAIT 100
+PRESS C 5
+WAIT 90
+HOLD LEFT
+WAIT 120
+PRESS B 5
+WAIT 200
+HOLD UP
+WAIT 5000

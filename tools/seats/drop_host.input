@@ -1,0 +1,31 @@
+# drop-in room test, host (seat 0): menus -> Head to Head -> on ice (~t1650),
+# then skate and shoot so the sim keeps producing rollback-visible input.
+WAIT 600
+PRESS START 5
+WAIT 120
+PRESS START 5
+WAIT 120
+PRESS DOWN 5
+WAIT 20
+PRESS RIGHT 5
+WAIT 20
+PRESS RIGHT 5
+WAIT 20
+PRESS RIGHT 5
+WAIT 20
+PRESS START 5
+WAIT 240
+PRESS START 5
+WAIT 240
+PRESS START 5
+WAIT 400
+HOLD UP
+WAIT 90
+PRESS C 6
+WAIT 200
+HOLD RIGHT
+WAIT 100
+RELEASE
+WAIT 150
+HOLD UP
+WAIT 5000

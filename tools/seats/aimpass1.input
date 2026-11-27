@@ -1,0 +1,59 @@
+# Aimed passing (NHL94_SEATS=home:C,home:RD), Head to Head. PLAYER 1 = seat 0 =
+# home C (SC 2), PLAYER 2 = seat 1 = home RD (SC 3, a human teammate). Home C
+# wins the faceoff and carries (puckc = 2: a deterministic gate, no RAM
+# injection). Passes use the game's own flow: hold a d-pad direction, press B,
+# release B. Every pass prints an "aim pass" line (nhl94_seats.c aim_pass_hook).
+PLAYER 2
+WAIT 1
+PLAYER 1
+# Title -> setup -> Players = Two - Head to Head -> on ice (~t1600).
+WAIT 600
+PRESS START 5
+WAIT 120
+PRESS START 5
+WAIT 120
+PRESS DOWN 5
+WAIT 20
+PRESS RIGHT 5
+WAIT 20
+PRESS RIGHT 5
+WAIT 20
+PRESS RIGHT 5
+WAIT 20
+PRESS START 5
+WAIT 240
+PRESS START 5
+WAIT 240
+PRESS START 5
+WAIT_RAM16 FFB7AA 0002
+WAIT 30
+# pass 1: the C aims DOWN-RIGHT at the RD (human) with the stick; RD stands
+HOLD DOWN
+HOLD RIGHT
+PRESS B 12
+WAIT 20
+RELEASE DOWN
+RELEASE RIGHT
+WAIT_RAM16 FFB7AA 0003
+WAIT 30
+# pass 2: the RD (human) passes UP-LEFT while the C CALLS (holds B) for the puck
+PLAYER 1
+HOLD B
+PLAYER 2
+HOLD UP
+HOLD LEFT
+PRESS B 12
+WAIT 20
+RELEASE UP
+RELEASE LEFT
+PLAYER 1
+RELEASE B
+WAIT_RAM16 FFB7AA 0002
+WAIT 30
+# pass 3: the C passes straight UP (nobody human there): AI mates / the game's pick
+PLAYER 1
+HOLD UP
+PRESS B 12
+WAIT 20
+RELEASE UP
+WAIT 300

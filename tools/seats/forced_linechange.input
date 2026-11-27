@@ -1,0 +1,27 @@
+# Forced line change for the locked home C (offline test of the release path):
+# at ~t1900 write newpnum/newpos on the C's object as setpersonel would.
+WAIT 600
+PRESS START 5
+WAIT 120
+PRESS START 5
+WAIT 120
+PRESS DOWN 5
+WAIT 20
+PRESS RIGHT 5
+WAIT 20
+PRESS RIGHT 5
+WAIT 20
+PRESS RIGHT 5
+WAIT 20
+PRESS START 5
+WAIT 240
+PRESS START 5
+WAIT 240
+PRESS START 5
+WAIT 500
+WRITE_RAM8 0xFFB1AA 0x04
+WRITE_RAM8 0xFFB1AB 0x0A
+HOLD UP
+WAIT 1200
+RELEASE UP
+WAIT 300

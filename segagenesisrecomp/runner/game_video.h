@@ -1,0 +1,161 @@
+#pragma once
+#include <stdint.h>
+#include <stddef.h>
+#include <string.h>
+
+struct GVDP;
+struct GVDPRasterRow;
+/* Synchronous, memoized original image for the current row. Valid only during
+ * scanline_lazy; callers that fully draw the row need not request it. */
+typedef const uint32_t *(*GameVideoNativeRow)(void *ctx);
+
+/* Optional game-owned presentation. It reads the live scene at the same
+ * scanline as the native VDP pass; the scanline/overlay callbacks must not
+ * advance or mutate the guest. Output storage belongs to the runner and can
+ * grow beyond VDP dimensions.
+ *
+ * CORRECTED 2026-09-25: "presentation only" does not hold for the MODE. A
+ * game may key simulation on it -- Sonic 2 activates objects across the
+ * requested width and raises the main CPU divisor while it is on -- so the
+ * configured mode (and a window-derived width) is session configuration
+ * online: runner/netplay/genesis_netplay.h, GenesisSessionConfig.video. */
+typedef struct GameVideo {
+    /* off, fit, stage, or a positive W:H ratio. Return 0 for invalid input. */
+    int (*configure)(const char *mode);
+    int (*enabled)(void);
+    /* Requested logical viewport width (0 means native geometry). Without an
+     * independent renderer qualifier, 0 also keeps legacy native rendering. */
+    int (*width)(int drawable_w, int drawable_h, int native_w, int native_h);
+    void (*scanline)(const struct GVDP *vdp, int line,
+                     const uint32_t *native, int native_w,
+                     uint32_t *out, int width);
+    /* Additive game UI/actors after native OR custom rendering. Independent
+     * of aspect mode; must not advance simulation or mutate the guest. */
+    void (*overlay_scanline)(const struct GVDP *vdp, int line,
+                             uint32_t *out, int width);
+    /* Optional complete-row producer. Sprite status has already been evaluated.
+     * Request original pixels through native_row only at fallback sites. The
+     * legacy scanline callback remains supported for existing game adapters. */
+    void (*scanline_lazy)(const struct GVDP *vdp, int line, int native_w,
+                          uint32_t *out, int width,
+                          GameVideoNativeRow native_row, void *native_ctx);
+    /* Optional complete-row ownership, independent of viewport/expansion mode.
+     * Pure presentation policy, sampled after width() at frame preparation.
+     * The producer must handle native geometry too, using native_row for any
+     * unsupported row. NULL retains the legacy enabled/width qualification.
+     * This does not enable scene hooks, change simulation or configure a mode. */
+    int (*renderer_enabled)(void);
+    /* Request immutable native plane/sprite inputs before evaluation. Only
+     * requested rows pay for plane capture. Presentation providers are consumed
+     * synchronously into owned pixels/masks/colors. NULL raster retains the
+     * ordinary image for unsupported captures. Capture or fallback evaluates
+     * device-visible sprite status exactly once. */
+    int (*raster_enabled)(const struct GVDP *vdp);
+    /* Complete-row producer with optional presented layers. Appended to keep
+     * existing lazy producers' signatures and initializers compatible. */
+    void (*scanline_presented)(const struct GVDP *vdp, int line, int native_w,
+                          uint32_t *out, int width,
+                          GameVideoNativeRow native_row, void *native_ctx,
+                          const struct GVDPRasterRow *raster);
+    /* Optional host-only interpolation. Configuration must not change guest
+     * activation, timing or canonical state. Capture runs synchronously on a
+     * genuine completed row, after the one guest-visible sprite evaluation;
+     * it must copy anything needed later (never retain providers/native_row).
+     * Existing adapters and their positional initializer prefix stay valid. */
+    void (*presentation_configure)(int enabled);
+    void (*presentation_capture)(const struct GVDP *vdp, int line,
+                          const uint32_t *image, int width, int native_w,
+                          const struct GVDPRasterRow *raster);
+    /* Previous completed image (0) to latest (1), overlays included. Return
+     * zero to repeat the ordinary image. May only read owned presentation
+     * snapshots; no guest execution, provider calls or canonical mutations. */
+    int (*interpolate)(double phase, uint32_t *image, int stride, int height);
+    void (*presentation_reset)(void);
+    /* Optional compact, host-local rewind companion. NULL measures save size.
+     * Validate before guest restore (apply=0), then apply after notifications.
+     * Never enters disk states, deterministic RB images, or netplay digests. */
+    size_t (*presentation_state_save)(void *dst, size_t capacity);
+    int (*presentation_state_load)(const void *src, size_t size, int apply);
+} GameVideo;
+
+/* Host-local derived frame plan, never deterministic machine/snapshot state.
+ * A zero width means actual native row geometry, not an absent row owner. */
+typedef struct GameVideoFrame {
+    const GameVideo *adapter,*owner;
+    int requested_width,width;
+    int viewport; /* qualified simulation/view policy, not local row ownership */
+} GameVideoFrame;
+
+static inline int game_video_has_viewport(const GameVideo *video)
+{
+    return video && video->configure && video->enabled && video->width;
+}
+
+static inline int game_video_viewport_enabled(const GameVideo *video)
+{
+    return video && video->enabled && video->enabled();
+}
+
+static inline GameVideoFrame game_video_prepare_frame(const GameVideo *video,
+    int drawable_w,int drawable_h,int native_w,int native_h)
+{
+    GameVideoFrame frame={video,NULL,0,0,0};
+    if(!video || native_w<=0 || native_h<=0)return frame;
+    /* Width may publish simulation state. Always do it before local ownership
+     * or texture eligibility, including when the selected renderer declines. */
+    if(video->enabled && video->enabled() && video->width)
+        frame.requested_width=video->width(drawable_w,drawable_h,native_w,native_h);
+    int valid_width=frame.requested_width>=native_w;
+    frame.viewport=valid_width;
+    int selected=video->renderer_enabled ? video->renderer_enabled() : valid_width;
+    if(selected && (video->scanline || video->scanline_lazy || video->scanline_presented)) {
+        frame.owner=video;
+        frame.width=valid_width ? frame.requested_width : 0;
+    }
+    return frame;
+}
+
+/* A local resource failure affects image ownership only, never configure(),
+ * enabled(), requested simulation width, or an agreed session profile. */
+static inline void game_video_native_fallback(GameVideoFrame *frame)
+{
+    frame->owner=NULL;frame->width=0;
+}
+
+static inline int game_video_output_width(const GameVideoFrame *frame,int native_w)
+{
+    return frame->owner && frame->width>0 ? frame->width : native_w;
+}
+
+/* Synchronous original-row provider has the same current-row memoization
+ * contract as GameVideoNativeRow. Returns the actual initialized row width.
+ * An oversized local plan falls back to the complete original row; it never
+ * advertises stale columns. The caller supplies capacity for native_w pixels. */
+static inline int game_video_draw_presented_row(const GameVideoFrame *frame,
+    const struct GVDP *vdp,int line,int native_w,uint32_t *out,int capacity,
+    GameVideoNativeRow native_row,void *native_ctx,const struct GVDPRasterRow *raster)
+{
+    int width=game_video_output_width(frame,native_w);
+    const GameVideo *owner=frame->owner;
+    if(width>capacity || width<=0){owner=NULL;width=native_w;}
+    if(native_w<=0 || native_w>capacity || !out || !native_row)return 0;
+    if(owner && owner->scanline_presented)
+        owner->scanline_presented(vdp,line,native_w,out,width,native_row,native_ctx,raster);
+    else if(owner && owner->scanline_lazy)
+        owner->scanline_lazy(vdp,line,native_w,out,width,native_row,native_ctx);
+    else if(owner && owner->scanline)
+        owner->scanline(vdp,line,native_row(native_ctx),native_w,out,width);
+    else memcpy(out,native_row(native_ctx),(size_t)native_w*sizeof *out);
+    if(frame->adapter && frame->adapter->overlay_scanline)
+        frame->adapter->overlay_scanline(vdp,line,out,width);
+    return width;
+}
+
+/* Preserve the existing lazy/legacy row interface. */
+static inline int game_video_draw_row(const GameVideoFrame *frame,
+    const struct GVDP *vdp,int line,int native_w,uint32_t *out,int capacity,
+    GameVideoNativeRow native_row,void *native_ctx)
+{
+    return game_video_draw_presented_row(frame,vdp,line,native_w,out,capacity,
+                                         native_row,native_ctx,NULL);
+}
